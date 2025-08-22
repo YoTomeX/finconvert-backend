@@ -33,15 +33,22 @@ app.post('/api/upload', upload.single('pdf'), (req, res) => {
     const pdfPath = req.file.path;
 
     // 🔄 Tu podłącz parser PDF → MT940
-    const mt940Content = '...wygenerowany plik MT940...';
+    const { spawn } = require('child_process');
 
-    const outputPath = path.join(__dirname, 'outputs', `${req.file.filename}.mt940`);
-    fs.writeFileSync(outputPath, mt940Content);
+	const outputPath = path.join(__dirname, 'outputs', `${req.file.filename}.mt940`);
+	const python = spawn('python', ['converter_web.py', pdfPath, outputPath]);
 
-    res.json({
-      success: true,
-      downloadUrl: `/downloads/${req.file.filename}.mt940`
-    });
+	python.on('close', (code) => {
+	  if (code === 0) {
+		res.json({
+		  success: true,
+		  downloadUrl: `/downloads/${req.file.filename}.mt940`
+		});
+	  } else {
+		res.status(500).json({ success: false, message: 'Błąd konwersji.' });
+	  }
+});
+
   } catch (err) {
     console.error('❌ Błąd podczas przetwarzania:', err);
     res.status(500).json({ success: false, message: 'Błąd serwera.' });
