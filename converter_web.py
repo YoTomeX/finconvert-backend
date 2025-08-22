@@ -3,15 +3,16 @@ import os
 from datetime import datetime
 import re
 import pdfplumber
+import traceback
 
-# --- Funkcje pomocnicze ---
 def parse_pdf_text(pdf_path):
-    """Wczytuje cały tekst z PDF jako jeden string"""
-    with pdfplumber.open(pdf_path) as pdf:
-        return "\n".join((page.extract_text() or "") for page in pdf.pages)
+    try:
+        with pdfplumber.open(pdf_path) as pdf:
+            return "\n".join((page.extract_text() or "") for page in pdf.pages)
+    except Exception as e:
+        raise ValueError(f"Nie można odczytać pliku PDF: {e}")
 
 def clean_amount(amount):
-    """Normalizuje format kwoty"""
     if not amount:
         return "0.00"
     amount = amount.replace('\xa0', '').replace(' ', '').replace('.', '').replace(',', '.')
@@ -21,7 +22,6 @@ def clean_amount(amount):
         return "0.00"
 
 def build_mt940(account_number, saldo_pocz, saldo_konc, transactions):
-    """Buduje plik MT940"""
     today = datetime.today().strftime("%y%m%d")
     start_date = transactions[0][0] if transactions else today
     end_date = transactions[-1][0] if transactions else today
@@ -44,9 +44,6 @@ def save_mt940_file(mt940_text, output_path):
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(mt940_text)
-
-
-# --- Parser Santander ---
 def santander_parser(text):
     text_norm = text.replace('\xa0', ' ')
     parts = re.split(r'(?i)Data operacji', text_norm)
@@ -100,8 +97,6 @@ def santander_parser(text):
 
     return account, saldo_pocz, saldo_konc, transactions
 
-
-# --- Parser Pekao v2 ---
 def pekao_parser(text):
     text_norm = text.replace('\xa0', ' ').replace('\u00A0', ' ')
 
@@ -156,35 +151,37 @@ def pekao_parser(text):
 
     return account, saldo_pocz, saldo_konc, transactions
 
-
-# --- Miejsce na inne banki ---
 def mbank_parser(text):
     raise NotImplementedError("Parser mBank jeszcze niezaimplementowany.")
 
-
-# --- Mapa banków ---
 BANK_PARSERS = {
     "santander": santander_parser,
     "mbank": mbank_parser,
     "pekao": pekao_parser
 }
 
-# --- Wykrywanie banku ---
 def detect_bank(text):
     text_lower = text.lower()
     if "santander" in text_lower or "data operacji" in text_lower:
         return "santander"
     if "bank pekao" in text_lower or ("saldo początkowe" in text_lower and "saldo końcowe" in text_lower):
         return "pekao"
+    if "mbank" in text_lower:
+        return "mbank"
     return None
 
 def convert(pdf_path, output_path):
     text = parse_pdf_text(pdf_path)
     bank = detect_bank(text)
+    print(f"🔍 Wykryty bank: {bank}")
     if not bank or bank not in BANK_PARSERS:
         raise ValueError("Nie rozpoznano banku lub parser niezaimplementowany.")
 
     account, saldo_pocz, saldo_konc, transactions = BANK_PARSERS[bank](text)
+    print(f"📄 Liczba transakcji: {len(transactions)}")
+    if not transactions:
+        print("⚠️ Brak transakcji w pliku PDF.")
+
     mt940_text = build_mt940(account, saldo_pocz, saldo_konc, transactions)
     save_mt940_file(mt940_text, output_path)
 
@@ -201,4 +198,5 @@ if __name__ == "__main__":
         print("✅ Konwersja zakończona sukcesem.")
     except Exception as e:
         print(f"❌ Błąd: {e}")
+        traceback.print_exc()
         sys.exit(1)

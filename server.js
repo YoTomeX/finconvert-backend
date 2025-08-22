@@ -24,30 +24,40 @@ ensureDir('outputs');
 // 📤 Konfiguracja uploadu
 const upload = multer({ dest: 'uploads/' });
 
-app.post('/api/upload', upload.single('pdf'), (req, res) => {
+// 🔄 Endpoint konwersji PDF → MT940
+app.post('/convert', upload.single('pdf'), (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ success: false, message: 'Brak pliku PDF.' });
     }
 
     const pdfPath = req.file.path;
+    const outputPath = path.join(__dirname, 'outputs', `${req.file.filename}.mt940`);
+    const scriptPath = path.join(__dirname, 'converter_web.py');
 
-    // 🔄 Tu podłącz parser PDF → MT940
     const { spawn } = require('child_process');
+    const python = spawn('python3', [scriptPath, pdfPath, outputPath]);
 
-	const outputPath = path.join(__dirname, 'outputs', `${req.file.filename}.mt940`);
-	const python = spawn('python', ['converter_web.py', pdfPath, outputPath]);
+    // 🔍 Obsługa błędów z procesu Pythona
+    python.stderr.on('data', (data) => {
+      console.error(`❌ Błąd Pythona: ${data}`);
+    });
 
-	python.on('close', (code) => {
-	  if (code === 0) {
-		res.json({
-		  success: true,
-		  downloadUrl: `/downloads/${req.file.filename}.mt940`
-		});
-	  } else {
-		res.status(500).json({ success: false, message: 'Błąd konwersji.' });
-	  }
-});
+    python.on('error', (err) => {
+      console.error('❌ Nie udało się uruchomić procesu Pythona:', err);
+      res.status(500).json({ success: false, message: 'Błąd uruchamiania konwertera.' });
+    });
+
+    python.on('close', (code) => {
+      if (code === 0) {
+        res.json({
+          success: true,
+          downloadUrl: `/downloads/${req.file.filename}.mt940`
+        });
+      } else {
+        res.status(500).json({ success: false, message: 'Błąd konwersji.' });
+      }
+    });
 
   } catch (err) {
     console.error('❌ Błąd podczas przetwarzania:', err);
