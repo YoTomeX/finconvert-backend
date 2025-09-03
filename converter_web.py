@@ -1,9 +1,14 @@
 import sys
 import os
+import locale
 from datetime import datetime
 import re
 import pdfplumber
 import traceback
+import io
+
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+
 
 def parse_pdf_text(pdf_path):
     try:
@@ -44,6 +49,18 @@ def save_mt940_file(mt940_text, output_path):
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(mt940_text)
+        
+def extract_statement_month(transactions):
+    if not transactions:
+        return "Nieznany"
+    try:
+        locale.setlocale(locale.LC_TIME, "pl_PL.UTF-8")  # Ustawienie języka polskiego
+        first_date = datetime.strptime(transactions[0][0], "%y%m%d")
+        return first_date.strftime("%B %Y")  # np. "listopad 2021"
+   
+    except:
+        return "Nieznany"
+
 def santander_parser(text):
     text_norm = text.replace('\xa0', ' ')
     parts = re.split(r'(?i)Data operacji', text_norm)
@@ -178,6 +195,8 @@ def convert(pdf_path, output_path):
         raise ValueError("Nie rozpoznano banku lub parser niezaimplementowany.")
 
     account, saldo_pocz, saldo_konc, transactions = BANK_PARSERS[bank](text)
+    statement_month = extract_statement_month(transactions)
+    print(f"📅 Miesiąc wyciągu: {statement_month}")
     print(f"📄 Liczba transakcji: {len(transactions)}")
     if not transactions:
         print("⚠️ Brak transakcji w pliku PDF.")
