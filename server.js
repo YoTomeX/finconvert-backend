@@ -95,31 +95,32 @@ app.post('/convert', upload.single('file'), (req, res) => {
     // -------------------
     // 1) WYKRYWANIE MIESIĄCA
     // -------------------
-    let statementMonth = 'Nieznany';
-    const monthPatterns = [
-      /📅\s*Miesiąc wyciągu:\s*([^\n\r]+)/,  // jeśli Python wypisał polski tag
-      /(\d{2})\.(\d{2})\.(\d{4})/,           // 31.12.2025
-      /(\d{4})-(\d{2})-(\d{2})/,             // 2025-12-31
-      /(\d{2})\/(\d{4})/                     // 12/2025
-    ];
-    for (const rx of monthPatterns) {
-      const m = stdoutData.match(rx);
-      if (m) {
-        if (rx === monthPatterns[0]) {
-          statementMonth = m[1].trim();
-        } else if (rx === monthPatterns[1]) {
-          const mm = parseInt(m[2],10), yy = m[3];
-          statementMonth = `${monthNamesPL[mm-1]} ${yy}`;
-        } else if (rx === monthPatterns[2]) {
-          const mm = parseInt(m[2],10), yy = m[1];
-          statementMonth = `${monthNamesPL[mm-1]} ${yy}`;
-        } else if (rx === monthPatterns[3]) {
-          const mm = parseInt(m[1],10), yy = m[2];
-          statementMonth = `${monthNamesPL[mm-1]} ${yy}`;
-        }
-        break;
-      }
+   let statementMonth = 'Nieznany';
+
+const monthPatterns = [
+  /📅\s*Miesiąc wyciągu:\s*([^\n\r]+)/,
+  /Miesiąc:\s*([^\n\r]+)/,
+  /(\d{2})\.(\d{2})\.(\d{4})/,       // 31.08.2025
+  /(\d{4})-(\d{2})-(\d{2})/,         // 2025-08-31
+  /(\d{2})\/(\d{4})/                 // 08/2025
+];
+
+for (const rx of monthPatterns) {
+  const m = stdoutData.match(rx);
+  if (m) {
+    if (rx === monthPatterns[0] || rx === monthPatterns[1]) {
+      statementMonth = m[1].trim();
+    } else if (rx === monthPatterns[2]) {
+      statementMonth = `${monthNamesPL[parseInt(m[2],10)-1]} ${m[3]}`;
+    } else if (rx === monthPatterns[3]) {
+      statementMonth = `${monthNamesPL[parseInt(m[2],10)-1]} ${m[1]}`;
+    } else if (rx === monthPatterns[4]) {
+      statementMonth = `${monthNamesPL[parseInt(m[1],10)-1]} ${m[2]}`;
     }
+    break;
+  }
+}
+
 
     // fallback z nazwy pliku YYYYMM*
     if (statementMonth === 'Nieznany') {
@@ -136,13 +137,13 @@ app.post('/convert', upload.single('file'), (req, res) => {
     // -------------------
     // 2) WYKRYWANIE BANKU
     // -------------------
-    let statementBank = 'Nieznany';
-    // podstawowy regex
-    const bankMatch = stdoutData.match(/Wykryty bank[:：]?\s*([^\n\r]+)/i);
-    if (bankMatch && bankMatch[1]) {
-      const raw = bankMatch[1].trim();
-      statementBank = raw.charAt(0).toUpperCase() + raw.slice(1).toLowerCase();
-    }
+   let statementBank = 'Nieznany';
+const bankMatch = stdoutData.match(/Wykryty bank:\s*([^\n\r]+)/);
+if (bankMatch && bankMatch[1]) {
+  const raw = bankMatch[1].trim();
+  statementBank = raw.charAt(0).toUpperCase() + raw.slice(1).toLowerCase();
+}
+
     // fallback: drugi token po "_" w sanitized filename
     if (statementBank === 'Nieznany') {
       const tokens = sanitizeFilename(req.file.filename).split('_');
@@ -151,6 +152,9 @@ app.post('/convert', upload.single('file'), (req, res) => {
         statementBank = cand.charAt(0).toUpperCase() + cand.slice(1).toLowerCase();
       }
     }
+	// Walidacja banku i miesiąca przed wysłaniem JSON-a
+	if (!statementMonth || statementMonth.length < 3) statementMonth = 'Nieznany';
+	if (!statementBank || statementBank.length < 2) statementBank = 'Nieznany';
 
     console.log(`🕓 Miesiąc: ${statementMonth}, 🏦 Bank: ${statementBank}`);
 
