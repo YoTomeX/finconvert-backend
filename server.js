@@ -100,9 +100,10 @@ app.post('/convert', upload.single('file'), (req, res) => {
 const monthPatterns = [
   /📅\s*Miesiąc wyciągu:\s*([^\n\r]+)/,
   /Miesiąc:\s*([^\n\r]+)/,
-  /(\d{2})\.(\d{2})\.(\d{4})/,       // 31.08.2025
-  /(\d{4})-(\d{2})-(\d{2})/,         // 2025-08-31
-  /(\d{2})\/(\d{4})/                 // 08/2025
+  /(\d{2})\.(\d{2})\.(\d{4})/,
+  /(\d{4})-(\d{2})-(\d{2})/,
+  /(\d{2})\/(\d{4})/,
+  /Za okres od \d{2}\/(\d{2})\/(\d{4})/  // 👈 NOWY
 ];
 
 for (const rx of monthPatterns) {
@@ -116,10 +117,13 @@ for (const rx of monthPatterns) {
       statementMonth = `${monthNamesPL[parseInt(m[2],10)-1]} ${m[1]}`;
     } else if (rx === monthPatterns[4]) {
       statementMonth = `${monthNamesPL[parseInt(m[1],10)-1]} ${m[2]}`;
+    } else if (rx === monthPatterns[5]) {
+      statementMonth = `${monthNamesPL[parseInt(m[1],10)-1]} ${m[2]}`;
     }
     break;
   }
 }
+
 
 
     // fallback z nazwy pliku YYYYMM*
