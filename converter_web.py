@@ -169,3 +169,51 @@ def pekao_parser(text):
 def mbank_parser(text):
     raise NotImplementedError("Parser mBank jeszcze niezaimplementowany.")
 
+BANK_PARSERS = {
+    "santander": santander_parser,
+    "mbank": mbank_parser,
+    "pekao": pekao_parser
+}
+
+def detect_bank(text):
+    text_lower = text.lower()
+    if "santander" in text_lower or "data operacji" in text_lower:
+        return "santander"
+    if "bank pekao" in text_lower or ("saldo początkowe" in text_lower and "saldo końcowe" in text_lower):
+        return "pekao"
+    if "mbank" in text_lower:
+        return "mbank"
+    return None
+
+def convert(pdf_path, output_path):
+    text = parse_pdf_text(pdf_path)
+    bank = detect_bank(text)
+    print(f"🔍 Wykryty bank: {bank}")
+    if not bank or bank not in BANK_PARSERS:
+        raise ValueError("Nie rozpoznano banku lub parser niezaimplementowany.")
+
+    account, saldo_pocz, saldo_konc, transactions = BANK_PARSERS[bank](text)
+    statement_month = extract_statement_month(transactions)
+    print(f"📅 Miesiąc wyciągu: {statement_month}")
+    print(f"📄 Liczba transakcji: {len(transactions)}")
+    if not transactions:
+        print("⚠️ Brak transakcji w pliku PDF.")
+
+    mt940_text = build_mt940(account, saldo_pocz, saldo_konc, transactions)
+    save_mt940_file(mt940_text, output_path)
+
+if __name__ == "__main__":
+    if len(sys.argv) != 3:
+        print("Użycie: python converter_web.py input.pdf output.mt940")
+        sys.exit(1)
+
+    input_pdf = sys.argv[1]
+    output_mt940 = sys.argv[2]
+
+    try:
+        convert(input_pdf, output_mt940)
+        print("✅ Konwersja zakończona sukcesem.")
+    except Exception as e:
+        print(f"❌ Błąd: {e}")
+        traceback.print_exc()
+        sys.exit(1)
