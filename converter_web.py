@@ -1,30 +1,32 @@
 import sys
 import os
-import locale
-from datetime import datetime
 import re
 import pdfplumber
+from datetime import datetime
 import traceback
 import io
 
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 
 
 def parse_pdf_text(pdf_path):
+    """Odczytaj tekst z PDF i usuń nagłówki/stopki."""
     with pdfplumber.open(pdf_path) as pdf:
         raw = "\n".join((page.extract_text() or "") for page in pdf.pages)
-    # usuń nagłówki/stopki
+    # usuń "Strona X/Y", nagłówki itp.
     cleaned = re.sub(r"Strona \d+/\d+", "", raw)
-    cleaned = re.sub(r"WYCIĄG BANKOWY.*?\n", "", cleaned)
+    cleaned = re.sub(r"WYCIĄG BANKOWY.*?\n", "", cleaned, flags=re.IGNORECASE)
     return cleaned
 
 
-def clean_amount(amount):
-    amount = amount.replace('\xa0', '').replace(' ', '').replace('.', '').replace(',', '.')
+def clean_amount(amount: str) -> str:
+    """Normalizuj kwotę do formatu 1234.56"""
+    amount = amount.replace("\xa0", "").replace(" ", "").replace(".", "").replace(",", ".")
     return "{:.2f}".format(float(amount))
 
 
 def build_mt940(account_number, saldo_pocz, saldo_konc, transactions):
+    """Budowanie pliku MT940"""
     today = datetime.today().strftime("%y%m%d")
     start_date = transactions[0][0] if transactions else today
     end_date = transactions[-1][0] if transactions else today
@@ -37,8 +39,8 @@ def build_mt940(account_number, saldo_pocz, saldo_konc, transactions):
     ]
 
     for date, amount, desc in transactions:
-        txn_type = 'C' if not amount.startswith('-') else 'D'
-        amount_clean = amount.lstrip('-')
+        txn_type = "C" if not amount.startswith("-") else "D"
+        amount_clean = amount.lstrip("-")
         mt940.append(f":61:{date}{txn_type}{amount_clean}NTRFNONREF")
         mt940.append(f":86:{desc}")
 
@@ -47,31 +49,56 @@ def build_mt940(account_number, saldo_pocz, saldo_konc, transactions):
 
 
 def santander_parser(text):
-    # dopasuj konto
-    account_m = re.search(r'(\d{26})', text.replace(" ", ""))
+    """Parser dla Santander PDF"""
+    text_norm = text.replace("\xa0", " ").replace("\u00A0", " ")
+    lines = [l.strip() for l in text_norm.splitlines() if l.strip()]
+
+    # numer konta
+    account_m = re.search(r"(\d{26})", text_norm.replace(" ", ""))
     account = account_m.group(1) if account_m else "00000000000000000000000000"
 
-    # saldo początkowe/końcowe
-    saldo_pocz_m = re.search(r"Saldo początkowe.*?([+-]?\d[\d\s.,]*) PLN", text)
-    saldo_konc_m = re.search(r"Saldo końcowe.*?([+-]?\d[\d\s.,]*) PLN", text)
+    # saldo początkowe i końcowe
+    saldo_pocz_m = re.search(r"Saldo początkowe.*?([+-]?\d[\d\s.,]*) PLN", text_norm)
+    saldo_konc_m = re.search(r"Saldo końcowe.*?([+-]?\d[\d\s.,]*) PLN", text_norm)
     saldo_pocz = clean_amount(saldo_pocz_m.group(1)) if saldo_pocz_m else "0.00"
     saldo_konc = clean_amount(saldo_konc_m.group(1)) if saldo_konc_m else "0.00"
 
     transactions = []
-    # regex: Data księgowania, kwota, opis
-    line_re = re.compile(
-        r"(\d{2}\.\d{2}\.\d{4})\s+(\d{2}\.\d{2}\.\d{4})\s+([+-]?\d[\d\s.,]*)\s*PLN\s+.*?(?=\d{2}\.\d{2}\.\d{4}|Saldo końcowe|$)",
-        re.S
-    )
-    for m in line_re.finditer(text):
-        raw_date = m.group(1)
-        date = datetime.strptime(raw_date, "%d.%m.%Y").strftime("%y%m%d")
-        amt = clean_amount(m.group(3))
-        if "-" in m.group(3):
-            amt = "-" + amt
-        desc = re.sub(r"\s+", " ", m.group(0)).strip()
-        desc = desc[:65]
-        transactions.append((date, amt, desc))
+    date_re = re.compile(r"\d{2}\.\d{2}\.\d{4}")
+    amount_re = re.compile(r"[+-]?\d[\d\s.,]*\s*PLN")
+
+    current_tx = {}
+    desc_parts = []
+
+    for line in lines:
+        if date_re.match(line):  # linia z datą
+            if current_tx and "amount" in current_tx:
+                desc = " ".join(desc_parts).strip()[:65]
+                transactions.append((current_tx["date"], current_tx["amount"], desc))
+                current_tx, desc_parts = {}, []
+
+            try:
+                d = datetime.strptime(line, "%d.%m.%Y").strftime("%y%m%d")
+                current_tx["date"] = d
+            except:
+                continue
+
+        elif amount_re.search(line):  # linia z kwotą
+            amt_m = amount_re.search(line)
+            raw_amt = amt_m.group().replace("PLN", "").strip()
+            amt = clean_amount(raw_amt)
+            if "-" in raw_amt:
+                amt = "-" + amt
+            current_tx["amount"] = amt
+
+        else:
+            # reszta idzie do opisu
+            desc_parts.append(line)
+
+    # ostatnia transakcja
+    if current_tx and "amount" in current_tx:
+        desc = " ".join(desc_parts).strip()[:65]
+        transactions.append((current_tx["date"], current_tx["amount"], desc))
 
     return account, saldo_pocz, saldo_konc, transactions
 
@@ -79,11 +106,12 @@ def santander_parser(text):
 def convert(pdf_path, output_path):
     text = parse_pdf_text(pdf_path)
     account, saldo_pocz, saldo_konc, transactions = santander_parser(text)
-    print(f"📄 Transakcji: {len(transactions)}")
+    print(f"📄 Transakcji znaleziono: {len(transactions)}")
 
     mt940_text = build_mt940(account, saldo_pocz, saldo_konc, transactions)
     with open(output_path, "w", encoding="windows-1250") as f:
         f.write(mt940_text)
+
     print("✅ Plik MT940 wygenerowany:", output_path)
 
 
