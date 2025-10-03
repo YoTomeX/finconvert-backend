@@ -237,55 +237,122 @@ def santander_parser(text):
 
 
 def pekao_parser(text):
-    text_norm = text.replace('\xa0', ' ').replace('\u00A0', ' ')
+    """
+    Ulepszony parser dla Pekao.
+    Zwraca: (account, saldo_pocz, saldo_konc, transactions)
+    transactions: lista krotek (yymmdd, amount_string_with_dot, description)
+    """
+    text_norm = (text or "").replace('\xa0', ' ').replace('\u00A0', ' ')
     lines = [l.strip() for l in text_norm.splitlines() if l.strip()]
 
-    saldo_pocz_m = re.search(r"SALDO POCZ[AĄ]TKOWE\s+([+-]?\d[\d\s,\.]*)", text_norm, re.IGNORECASE)
-    saldo_konc_m = re.search(r"SALDO KO[NŃ]COWE\s+([+-]?\d[\d\s,\.]*)", text_norm, re.IGNORECASE)
-    saldo_pocz = clean_amount(saldo_pocz_m.group(1)) if saldo_pocz_m else "0.00"
-    saldo_konc = clean_amount(saldo_konc_m.group(1)) if saldo_konc_m else "0.00"
-
-    account_m = re.search(r'(\d{24,28})', text_norm)
-    account = account_m.group(1) if account_m else ""
+    # regexy
+    date_inline_re = re.compile(r'(\d{2}[./-]\d{2}[./-]\d{4})')  # dd/mm/yyyy lub dd-mm-yyyy lub dd.mm.yyyy
+    amt_re = re.compile(r'([+-]?\d{1,3}(?:[ \u00A0]\d{3})*[.,]\d{2})\s*(PLN)?', re.IGNORECASE)
+    saldo_re = re.compile(r'(SALDO POCZ[AĄ]TKOWE|SALDO KO[NŃ]COWE)\s*[:\-]?\s*([+-]?\d[\d\s,\.]*)', re.IGNORECASE)
+    account_re = re.compile(r'(PL)?\s*([0-9 ]{20,34})')
 
     transactions = []
     i = 0
     while i < len(lines):
         line = lines[i]
-        if re.match(r'^\d{2}[/.\-]\d{2}[/.\-]\d{4}', line):
-            parts = line.split(maxsplit=2)
-            if len(parts) < 2:
-                i += 1
-                continue
-            raw_date, raw_amount = parts[0], parts[1]
-            desc_parts = [parts[2]] if len(parts) > 2 else []
 
-            date = None
+        # jeśli linia zaczyna od daty lub zawiera datę i ilość pól
+        mdate = date_inline_re.search(line)
+        if mdate:
+            raw_date = mdate.group(1)
+            # normalizacja daty -> yymmdd
+            parsed_date = None
             for fmt in ("%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y"):
                 try:
-                    date = datetime.strptime(raw_date, fmt).strftime("%y%m%d")
+                    parsed_date = datetime.strptime(raw_date, fmt).strftime("%y%m%d")
                     break
                 except:
                     continue
-            if not date:
-                date = datetime.today().strftime("%y%m%d")
+            if not parsed_date:
+                parsed_date = datetime.today().strftime("%y%m%d")
 
-            amt_clean = clean_amount(raw_amount)
-            if raw_amount.startswith('-') and not amt_clean.startswith('-'):
-                amt_clean = "-" + amt_clean
+            # próbujemy znaleźć kwotę w tej linii (często są: DATA OPIS   KWOTA)
+            amount = None
+            desc_parts = []
 
-            j = i + 1
-            while j < len(lines) and not re.match(r'^\d{2}[/.\-]\d{2}[/.\-]\d{4}', lines[j]) and not lines[j].lower().startswith("suma obrot"):
-                desc_parts.append(lines[j])
-                j += 1
+            # jeśli w linii jest kwota
+            am = amt_re.search(line)
+            if am:
+                amt_raw = am.group(1)
+                amt_clean = clean_amount(amt_raw)
+                # determinacja znaku: jeśli '-' w otoczeniu liczby
+                if '-' in line and not amt_clean.startswith('-'):
+                    amt_clean = '-' + amt_clean
+                amount = amt_clean
+                # usuń kwotę z linii, reszta jako opis
+                desc_line = amt_re.sub('', line).strip()
+                # usuń datę z opisu
+                desc_line = date_inline_re.sub('', desc_line).strip()
+                if desc_line:
+                    desc_parts.append(desc_line)
+            else:
+                # jeśli kwoty nie ma w tej linii, lookahead kilka linii
+                j = i + 1
+                lookahead = 4
+                while j < len(lines) and j <= i + lookahead:
+                    lm = amt_re.search(lines[j])
+                    if lm:
+                        amt_raw = lm.group(1)
+                        amt_clean = clean_amount(amt_raw)
+                        if '-' in lines[j] and not amt_clean.startswith('-'):
+                            amt_clean = '-' + amt_clean
+                        amount = amt_clean
+                        # zbierz opis: wszystko pomiędzy date-line a linii z kwotą
+                        # dodaj fragmenty opisów z wierszy pośrednich oraz treść linii z kwotą bez kwoty
+                        for k in range(i, j+1):
+                            ln = lines[k]
+                            ln_no_amt = amt_re.sub('', ln).strip()
+                            ln_no_date = date_inline_re.sub('', ln_no_amt).strip()
+                            if ln_no_date:
+                                desc_parts.append(ln_no_date)
+                        break
+                    else:
+                        # accumulative possible description lines
+                        ln_no_date = date_inline_re.sub('', lines[j]).strip()
+                        if ln_no_date:
+                            desc_parts.append(ln_no_date)
+                    j += 1
+                # przesuwamy indeks na linię po parsowanej grupie
+                if amount:
+                    i = j
+                else:
+                    i += 1
+                    continue  # nie znaleziono kwoty, kontynuuj
 
             desc = " ".join(desc_parts).strip()
-            transactions.append((date, amt_clean, desc))
-            i = j
+            transactions.append((parsed_date, amount, desc[:200]))
         else:
             i += 1
 
+    # salda: spróbuj znaleźć SALDO POCZĄTKOWE i SALDO KOŃCOWE (różne warianty)
+    saldo_pocz = "0.00"
+    saldo_konc = "0.00"
+    m_pocz = re.search(r"saldo pocz[aą]tkowe[:\s]*([+-]?\d[\d\s.,]*)", text_norm, re.IGNORECASE)
+    m_konc = re.search(r"saldo ko[nń]cowe[:\s]*([+-]?\d[\d\s.,]*)", text_norm, re.IGNORECASE)
+    if m_pocz:
+        saldo_pocz = clean_amount(m_pocz.group(1))
+    if m_konc:
+        saldo_konc = clean_amount(m_konc.group(1))
+
+    # account: najpierw szukamy IBAN-like (PL + digits) lub ciągu 24-28 cyfr
+    account = ""
+    m_acc = account_re.search(text_norm)
+    if m_acc:
+        acct = m_acc.group(0)
+        acct = re.sub(r'[^0-9]', '', acct)
+        account = acct
+    else:
+        acc2 = re.search(r'(\d{24,28})', text_norm)
+        if acc2:
+            account = acc2.group(1)
+
     return account, saldo_pocz, saldo_konc, transactions
+
 
 def mbank_parser(text):
     raise NotImplementedError("Parser mBank jeszcze niezaimplementowany.")
@@ -298,14 +365,14 @@ BANK_PARSERS = {
 
 def detect_bank(text):
     text_lower = (text or "").lower()
-    # rozszerzone frazy, uwzględniające różne warianty nagłówków
     if any(k in text_lower for k in ("santander", "santander bank polska", "historia rachunku", "zestawienie operacji", "data operacji")):
         return "santander"
-    if any(k in text_lower for k in ("bank pekao", "saldo pocz", "saldo konc")):
+    if any(k in text_lower for k in ("bank pekao", "pekao", "pekao s.a.", "saldo pocz", "saldo konc", "karta platnicza")):
         return "pekao"
     if "mbank" in text_lower:
         return "mbank"
     return None
+
 
 
 # ------------------- CONVERT -------------------
