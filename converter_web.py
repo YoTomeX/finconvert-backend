@@ -138,15 +138,22 @@ def pekao_parser(text):
     i = 0
     while i < len(lines):
         line = lines[i]
-        if re.match(r'^\d{2}/\d{2}/\d{4}', line):
+        if re.match(r'^\d{2}[/.\-]\d{2}[/.\-]\d{4}', line):  # dopuszczamy /, -, .
             parts = line.split(maxsplit=2)
             raw_date, raw_amount = parts[0], parts[1]
             desc_parts = [parts[2]] if len(parts) > 2 else []
 
-            try:
-                date = datetime.strptime(raw_date, "%d/%m/%Y").strftime("%y%m%d")
-            except:
-                date = datetime.today().strftime("%y%m%d")
+        # konwersja daty z fallbackami
+        date = None
+        for fmt in ("%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y"):
+        try:
+            date = datetime.strptime(raw_date, fmt).strftime("%y%m%d")
+            break
+        except:
+            continue
+    if not date:
+        date = datetime.today().strftime("%y%m%d")
+
 
             amt_clean = clean_amount(raw_amount)
             if raw_amount.startswith('-') and not amt_clean.startswith('-'):
