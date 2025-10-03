@@ -40,13 +40,14 @@ def build_mt940(account_number, saldo_pocz, saldo_konc, transactions):
     for date, amount, desc in transactions:
         txn_type = 'C' if not amount.startswith('-') else 'D'
         amount_clean = format_amount(amount.lstrip('-'))
-        full_date = f"{date}{date[-4:]}"
-        mt940.append(f":61:{full_date}{txn_type}{amount_clean}NTRFNONREF")
+        mt940.append(f":61:{date}{txn_type}{amount_clean}NTRFNONREF")
         mt940.append(f":86:^00{desc}")
     mt940.append(f":62F:C{end_date}PLN{format_amount(saldo_konc)}")
+    mt940.append(f":64:C{end_date}PLN{format_amount(saldo_konc)}")  # saldo dostępne
     return "\n".join(mt940) + "\n"
 
 def save_mt940_file(mt940_text, output_path):
+    mt940_text = mt940_text.replace('\n', '\r\n')  # CRLF dla Symfonii
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     with open(output_path, "w", encoding="windows-1250") as f:
         f.write(mt940_text)
@@ -178,26 +179,34 @@ def detect_bank(text):
         return "mbank"
     return None
 
-def convert(pdf_path, output_path):
+ def convert(pdf_path, output_path):
+    # Wczytaj tekst z PDF
     text = parse_pdf_text(pdf_path)
 
+    # Zapisz debugowy tekst do pliku
     with open("debug.txt", "w", encoding="utf-8") as dbg:
         dbg.write(text)
 
+    # Wykryj bank
     bank = detect_bank(text)
     print(f"🔍 Wykryty bank: {bank}")
     if not bank or bank not in BANK_PARSERS:
         raise ValueError("Nie rozpoznano banku lub parser niezaimplementowany.")
 
+    # Parsuj dane
     account, saldo_pocz, saldo_konc, transactions = BANK_PARSERS[bank](text)
     statement_month = extract_statement_month(transactions)
     print(f"📅 Miesiąc wyciągu: {statement_month}")
     print(f"📄 Liczba transakcji: {len(transactions)}")
     if not transactions:
-        print("⚠️ Brak transakcji w PDF")
+        print("⚠️ Brak transakcji w pliku PDF.")
 
+    # Buduj MT940
     mt940_text = build_mt940(account, saldo_pocz, saldo_konc, transactions)
+
+    # Zapisz plik z poprawnym kodowaniem i zakończeniami linii
     save_mt940_file(mt940_text, output_path)
+
 
 
 if __name__ == "__main__":
