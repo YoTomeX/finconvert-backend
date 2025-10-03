@@ -238,29 +238,29 @@ def santander_parser(text):
 
 def pekao_parser(text):
     """
-    Ulepszony parser dla Pekao.
-    Zwraca: (account, saldo_pocz, saldo_konc, transactions)
-    transactions: lista krotek (yymmdd, amount_string_with_dot, description)
+    Odporna wersja parsera Pekao.
+    - rozpoznaje daty w formatach dd/mm/yyyy, dd-mm-yyyy, dd.mm.yyyy
+    - dopasowuje kwoty zarówno w tej samej linii co data, jak i w następujących liniach
+    - agreguje opis z sąsiednich linii (lookahead)
+    - zwraca (account, saldo_pocz, saldo_konc, transactions)
+    transactions: lista (yymmdd, amount_like_1234.56, description)
     """
     text_norm = (text or "").replace('\xa0', ' ').replace('\u00A0', ' ')
-    lines = [l.strip() for l in text_norm.splitlines() if l.strip()]
+    lines = [l.rstrip() for l in text_norm.splitlines() if l.strip()]
 
-    # regexy
-    date_inline_re = re.compile(r'(\d{2}[./-]\d{2}[./-]\d{4})')  # dd/mm/yyyy lub dd-mm-yyyy lub dd.mm.yyyy
-    amt_re = re.compile(r'([+-]?\d{1,3}(?:[ \u00A0]\d{3})*[.,]\d{2})\s*(PLN)?', re.IGNORECASE)
-    saldo_re = re.compile(r'(SALDO POCZ[AĄ]TKOWE|SALDO KO[NŃ]COWE)\s*[:\-]?\s*([+-]?\d[\d\s,\.]*)', re.IGNORECASE)
-    account_re = re.compile(r'(PL)?\s*([0-9 ]{20,34})')
+    date_re = re.compile(r'(\d{2}[./-]\d{2}[./-]\d{4})')
+    amt_re = re.compile(r'([+-]?\d{1,3}(?:[ \u00A0]\d{3})*[.,]\d{2})\s*(PLN|zł|zl)?', re.IGNORECASE)
+    saldo_pocz_re = re.compile(r"saldo pocz[aą]tkowe[:\s]*([+-]?\d[\d\s,\.]*)", re.IGNORECASE)
+    saldo_konc_re = re.compile(r"saldo ko[nń]cowe[:\s]*([+-]?\d[\d\s,\.]*)", re.IGNORECASE)
+    account_re = re.compile(r'(?:PL)?\s*([0-9 ]{24,34})')
 
     transactions = []
     i = 0
     while i < len(lines):
         line = lines[i]
-
-        # jeśli linia zaczyna od daty lub zawiera datę i ilość pól
-        mdate = date_inline_re.search(line)
+        mdate = date_re.search(line)
         if mdate:
             raw_date = mdate.group(1)
-            # normalizacja daty -> yymmdd
             parsed_date = None
             for fmt in ("%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y"):
                 try:
@@ -271,87 +271,87 @@ def pekao_parser(text):
             if not parsed_date:
                 parsed_date = datetime.today().strftime("%y%m%d")
 
-            # próbujemy znaleźć kwotę w tej linii (często są: DATA OPIS   KWOTA)
+            # Spróbuj znaleźć kwotę w tej samej linii
             amount = None
             desc_parts = []
 
-            # jeśli w linii jest kwota
             am = amt_re.search(line)
             if am:
                 amt_raw = am.group(1)
                 amt_clean = clean_amount(amt_raw)
-                # determinacja znaku: jeśli '-' w otoczeniu liczby
-                if '-' in line and not amt_clean.startswith('-'):
-                    amt_clean = '-' + amt_clean
+                # wykryj znak minus w linii
+                if re.search(r'(^|\s)-\s*' + re.escape(am.group(1)), line) or '-' in line.split(am.group(1))[0]:
+                    if not amt_clean.startswith('-'):
+                        amt_clean = '-' + amt_clean
                 amount = amt_clean
-                # usuń kwotę z linii, reszta jako opis
-                desc_line = amt_re.sub('', line).strip()
-                # usuń datę z opisu
-                desc_line = date_inline_re.sub('', desc_line).strip()
-                if desc_line:
-                    desc_parts.append(desc_line)
+                # buduj opis: usuń datę i kwotę z linii
+                tmp = date_re.sub('', line)
+                tmp = amt_re.sub('', tmp).strip()
+                if tmp:
+                    desc_parts.append(tmp)
             else:
-                # jeśli kwoty nie ma w tej linii, lookahead kilka linii
+                # lookahead: szukamy kwoty w następnych liniach (np. tabela gdzie kwota w kolumnie)
                 j = i + 1
-                lookahead = 4
+                lookahead = 5
+                found_j = None
                 while j < len(lines) and j <= i + lookahead:
-                    lm = amt_re.search(lines[j])
-                    if lm:
-                        amt_raw = lm.group(1)
+                    mam = amt_re.search(lines[j])
+                    if mam:
+                        amt_raw = mam.group(1)
                         amt_clean = clean_amount(amt_raw)
                         if '-' in lines[j] and not amt_clean.startswith('-'):
                             amt_clean = '-' + amt_clean
                         amount = amt_clean
-                        # zbierz opis: wszystko pomiędzy date-line a linii z kwotą
-                        # dodaj fragmenty opisów z wierszy pośrednich oraz treść linii z kwotą bez kwoty
+                        # zbierz opis: wszystko od i do j bez fragmentów kwoty/dat
                         for k in range(i, j+1):
                             ln = lines[k]
-                            ln_no_amt = amt_re.sub('', ln).strip()
-                            ln_no_date = date_inline_re.sub('', ln_no_amt).strip()
-                            if ln_no_date:
-                                desc_parts.append(ln_no_date)
+                            ln_no_date = date_re.sub('', ln)
+                            ln_no_amt = amt_re.sub('', ln_no_date)
+                            if ln_no_amt.strip():
+                                desc_parts.append(ln_no_amt.strip())
+                        found_j = j
                         break
                     else:
                         # accumulative possible description lines
-                        ln_no_date = date_inline_re.sub('', lines[j]).strip()
+                        ln_no_date = date_re.sub('', lines[j]).strip()
                         if ln_no_date:
                             desc_parts.append(ln_no_date)
                     j += 1
-                # przesuwamy indeks na linię po parsowanej grupie
-                if amount:
-                    i = j
-                else:
-                    i += 1
-                    continue  # nie znaleziono kwoty, kontynuuj
+                if found_j:
+                    i = found_j
 
-            desc = " ".join(desc_parts).strip()
-            transactions.append((parsed_date, amount, desc[:200]))
+            desc = " ".join([d for d in desc_parts if d]).strip()
+            if amount:
+                transactions.append((parsed_date, amount, desc[:250]))
+            # przesuwamy wskaźnik na kolejny wiersz po parsowanej grupie
+            i += 1
         else:
             i += 1
 
-    # salda: spróbuj znaleźć SALDO POCZĄTKOWE i SALDO KOŃCOWE (różne warianty)
+    # salda
     saldo_pocz = "0.00"
     saldo_konc = "0.00"
-    m_pocz = re.search(r"saldo pocz[aą]tkowe[:\s]*([+-]?\d[\d\s.,]*)", text_norm, re.IGNORECASE)
-    m_konc = re.search(r"saldo ko[nń]cowe[:\s]*([+-]?\d[\d\s.,]*)", text_norm, re.IGNORECASE)
+    m_pocz = saldo_pocz_re.search(text_norm)
+    m_konc = saldo_konc_re.search(text_norm)
     if m_pocz:
         saldo_pocz = clean_amount(m_pocz.group(1))
     if m_konc:
         saldo_konc = clean_amount(m_konc.group(1))
 
-    # account: najpierw szukamy IBAN-like (PL + digits) lub ciągu 24-28 cyfr
+    # account: spróbuj znaleźć IBAN-like lub ciąg 24-28 cyfr
     account = ""
     m_acc = account_re.search(text_norm)
     if m_acc:
-        acct = m_acc.group(0)
-        acct = re.sub(r'[^0-9]', '', acct)
-        account = acct
+        acct = m_acc.group(1)
+        acct = re.sub(r'\s+', '', acct)
+        account = re.sub(r'[^0-9]', '', acct)
     else:
         acc2 = re.search(r'(\d{24,28})', text_norm)
         if acc2:
             account = acc2.group(1)
 
     return account, saldo_pocz, saldo_konc, transactions
+
 
 
 def mbank_parser(text):
@@ -365,14 +365,24 @@ BANK_PARSERS = {
 
 def detect_bank(text):
     text_lower = (text or "").lower()
-    if any(k in text_lower for k in ("santander", "santander bank polska", "historia rachunku", "zestawienie operacji", "data operacji")):
-        return "santander"
-    if any(k in text_lower for k in ("bank pekao", "pekao", "pekao s.a.", "saldo pocz", "saldo konc", "karta platnicza")):
+    # silniejsze dopasowania dla Pekao
+    pekao_tokens = ("bank pekao", "pekao", "pekao s.a.", "pekao sa", "pekao s a")
+    santander_tokens = ("santander", "santander bank polska")
+    mbank_tokens = ("mbank",)
+
+    if any(t in text_lower for t in pekao_tokens):
         return "pekao"
-    if "mbank" in text_lower:
+    if any(t in text_lower for t in santander_tokens):
+        return "santander"
+    if any(t in text_lower for t in mbank_tokens):
         return "mbank"
     return None
 
+# ---------- tymczasowy log: -------------------
+with open("debug_parser_summary.txt","w",encoding="utf-8") as f:
+    f.write(f"bank={bank}\naccount={account}\nsaldo_pocz={saldo_pocz}\nsaldo_konc={saldo_konc}\ntransactions_count={len(transactions)}\n")
+    for t in transactions[:30]:
+        f.write(repr(t) + "\n")
 
 
 # ------------------- CONVERT -------------------
