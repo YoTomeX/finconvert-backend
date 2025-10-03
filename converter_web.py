@@ -138,42 +138,79 @@ def extract_statement_month(transactions):
 
 def santander_parser(text):
     """
-    Prost parser dla Santander: znajduje linie z 'Data operacji YYYY-MM-DD' lub
-    linie zaczynające od daty 'YYYY-MM-DD', a następnie szuka pierwszej linii z PLN.
-    Zwraca account(26digits), saldo_pocz, saldo_konc, transactions list[(yymmdd, amt, desc)]
+    Ulepszony parser Santander:
+    - rozpoznaje linie zawierające 'Data operacji' z datą w tej samej linii,
+    - obsługuje grupowanie opisów kiedy opis i tytuł są w kolejnych wierszach,
+    - szuka pierwszego wystąpienia kwoty z PLN w najbliższych liniach.
+    Zwraca (account, saldo_pocz, saldo_konc, transactions)
+    transactions: list of (yymmdd, amount_string_with_dot, description)
     """
-    text_norm = text.replace('\xa0', ' ').replace('\u00A0', ' ')
+    text_norm = (text or "").replace('\xa0', ' ').replace('\u00A0', ' ')
     lines = [l.strip() for l in text_norm.splitlines() if l.strip()]
 
     transactions = []
     i = 0
+    # regexy
+    data_op_re = re.compile(r'(?:data operacji|data księgowania|data księgowania).*?(\d{4}[-/]\d{2}[-/]\d{2}|\d{4}\.\d{2}\.\d{2})', re.IGNORECASE)
+    any_date_re = re.compile(r'(\d{4}[-/]\d{2}[-/]\d{2})')
+    amt_re = re.compile(r'([+-]?\d{1,3}(?:[ \u00A0]\d{3})*[.,]\d{2})\s*PLN', re.IGNORECASE)
+
     while i < len(lines):
-        # dopuszczamy datę w formacie 2025-06-30
-        if re.match(r'^\d{4}-\d{2}-\d{2}$', lines[i]):
-            raw_date = lines[i]
+        line = lines[i]
+        # spróbuj wyciągnąć datę z linii zawierającej 'Data operacji' (częsty format w PDF)
+        m = data_op_re.search(line)
+        raw_date = None
+        if m:
+            raw_date = m.group(1)
+        else:
+            # fallback: jeśli linia zawiera tylko datę w formacie YYYY-MM-DD
+            m2 = any_date_re.search(line)
+            if m2 and re.match(r'^\d{4}[-/]\d{2}[-/]\d{2}$', line):
+                raw_date = m2.group(1)
+
+        if raw_date:
+            # normalizuj datę do yymmdd
             try:
-                date = datetime.strptime(raw_date, "%Y-%m-%d").strftime("%y%m%d")
-            except:
-                date = datetime.today().strftime("%y%m%d")
-            j = i + 1
+                dt = datetime.strptime(raw_date.replace('.', '-'), "%Y-%m-%d")
+                date_yymmdd = dt.strftime("%y%m%d")
+            except Exception:
+                date_yymmdd = datetime.today().strftime("%y%m%d")
+
+            # zbieraj opis i kwotę: przeszukaj kilka następnych linii (np. do +5)
             desc_parts = []
             amount = None
-            while j < len(lines):
-                if "PLN" in lines[j]:
-                    amt_match = re.search(r'([+-]?\d[\d\s.,]*)\s*PLN', lines[j])
-                    if amt_match:
-                        amt_raw = amt_match.group(1)
-                        amt_clean = clean_amount(amt_raw)
-                        if "-" in amt_raw:
-                            amt_clean = "-" + amt_clean.lstrip("-")
-                        amount = amt_clean
-                    break
+            j = i
+            lookahead = 6
+            while j < len(lines) and j <= i + lookahead:
+                l = lines[j]
+                # jeśli linia zawiera PLN -> prawdopodobnie kwota
+                am = amt_re.search(l)
+                if am and amount is None:
+                    amt_raw = am.group(1)
+                    amt_clean = clean_amount(amt_raw)
+                    # zachowaj znak minus jeśli występował przed kwotą albo w tej samej linii
+                    if '-' in l or l.strip().startswith('-') or l.find(' -')!=-1:
+                        if not amt_clean.startswith('-'):
+                            amt_clean = '-' + amt_clean
+                    amount = amt_clean
+                    # dopisz resztę tej linii jako fragment opisu (przed lub po PLN)
+                    # usuń fragment z kwotą z linii
+                    desc_line = amt_re.sub('', l).strip()
+                    if desc_line:
+                        desc_parts.append(desc_line)
+                    # nie przerywamy natychmiast — czasem opis jest dalej
                 else:
-                    desc_parts.append(lines[j])
+                    # ignoruj powtarzające się "Data księgowania" itp
+                    if not re.search(r'data księgowania|data operacji', l, re.IGNORECASE):
+                        desc_parts.append(l)
                 j += 1
+
             desc = " ".join(desc_parts).strip()
+            # jeżeli znaleziono kwotę, dodaj transakcję
             if amount:
-                transactions.append((date, amount, desc))
+                transactions.append((date_yymmdd, amount, desc[:200]))
+
+            # przesuwamy i kontynuujemy
             i = j
         else:
             i += 1
@@ -184,11 +221,20 @@ def santander_parser(text):
     saldo_pocz = clean_amount(saldo_pocz_m.group(1)) if saldo_pocz_m else "0.00"
     saldo_konc = clean_amount(saldo_konc_m.group(1)) if saldo_konc_m else "0.00"
 
-    # account: szukamy 26 cyfr (bez spacji) lub ciąg 24-28 cyfr
-    account_m = re.search(r'(\d{24,28})', text_norm)
-    account = account_m.group(1) if account_m else ""
+    # account: szukamy najdłuższego ciągu cyfr (IBAN może być z PL lub bez spacji)
+    # spróbuj najpierw wariantu z PL i przerwami
+    acct_m = re.search(r'(PL)?\s*([0-9 ]{20,34})', text_norm)
+    account = ""
+    if acct_m:
+        account = re.sub(r'\s+', '', acct_m.group(0))
+        account = re.sub(r'[^0-9]', '', account)
+    else:
+        # fallback: wybierz pierwsze wystąpienie 24-28 cyfr
+        acc2 = re.search(r'(\d{24,28})', text_norm)
+        account = acc2.group(1) if acc2 else ""
 
     return account, saldo_pocz, saldo_konc, transactions
+
 
 def pekao_parser(text):
     text_norm = text.replace('\xa0', ' ').replace('\u00A0', ' ')
@@ -252,13 +298,15 @@ BANK_PARSERS = {
 
 def detect_bank(text):
     text_lower = (text or "").lower()
-    if "santander" in text_lower or "santander bank polska" in text_lower or "data operacji" in text_lower:
+    # rozszerzone frazy, uwzględniające różne warianty nagłówków
+    if any(k in text_lower for k in ("santander", "santander bank polska", "historia rachunku", "zestawienie operacji", "data operacji")):
         return "santander"
-    if "bank pekao" in text_lower or "saldo pocz" in text_lower or "saldo konc" in text_lower:
+    if any(k in text_lower for k in ("bank pekao", "saldo pocz", "saldo konc")):
         return "pekao"
     if "mbank" in text_lower:
         return "mbank"
     return None
+
 
 # ------------------- CONVERT -------------------
 
