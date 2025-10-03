@@ -1,3 +1,7 @@
+# converter.py
+# Konwersja PDF (Santander / Pekao) → MT940 (Symfonia)
+# 02.10.2025
+
 import sys
 import os
 import locale
@@ -7,13 +11,18 @@ import pdfplumber
 import traceback
 import io
 
+# obsługa polskich znaków w konsoli Windows
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
+
 def parse_pdf_text(pdf_path):
+    """Wczytuje i scala tekst z PDF."""
     with pdfplumber.open(pdf_path) as pdf:
         return "\n".join((page.extract_text() or "") for page in pdf.pages)
 
+
 def clean_amount(amount):
+    """Czyści kwoty z formatu PL, zamienia , na ."""
     if not amount:
         return "0.00"
     amount = amount.replace('\xa0', '').replace(' ', '').replace('.', '').replace(',', '.')
@@ -22,34 +31,34 @@ def clean_amount(amount):
     except ValueError:
         return "0.00"
 
+
 def build_mt940(account_number, saldo_pocz, saldo_konc, transactions):
+    """Buduje MT940 zgodne z Symfonią."""
     today = datetime.today().strftime("%y%m%d")
     start_date = transactions[0][0] if transactions else today
     end_date = transactions[-1][0] if transactions else today
 
-    def format_amount(amount):
-        return amount.replace('.', ',')
-
     mt940 = [
         ":20:STMT",
-        f":25:/PL{account_number}",
+        f":25:{account_number}",
         ":28C:00001",
-        f":60F:C{start_date}PLN{format_amount(saldo_pocz)}",
+        f":60F:C{start_date}{saldo_pocz}"
     ]
-
     for date, amount, desc in transactions:
         txn_type = 'C' if not amount.startswith('-') else 'D'
-        amount_clean = format_amount(amount.lstrip('-'))
-        full_date = f"{date}{date[-4:]}"
-        mt940.append(f":61:{full_date}{txn_type}{amount_clean}NTRFNONREF")
-        mt940.append(f":86:^00{desc}")
-    mt940.append(f":62F:C{end_date}PLN{format_amount(saldo_konc)}")
+        amount_clean = amount.lstrip('-')
+        mt940.append(f":61:{date}{txn_type}{amount_clean}NTRFNONREF")
+        mt940.append(f":86:{desc}")
+    mt940.append(f":62F:C{end_date}{saldo_konc}")
     return "\n".join(mt940) + "\n"
 
+
 def save_mt940_file(mt940_text, output_path):
+    """Zapisuje plik MT940 w Windows-1250."""
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     with open(output_path, "w", encoding="windows-1250") as f:
         f.write(mt940_text)
+
 
 def extract_statement_month(transactions):
     if not transactions:
@@ -61,6 +70,7 @@ def extract_statement_month(transactions):
     except:
         return "Nieznany"
 
+
 # ------------------- PARSERY -------------------
 
 def santander_parser(text):
@@ -70,7 +80,7 @@ def santander_parser(text):
     transactions = []
     i = 0
     while i < len(lines):
-        if re.match(r'^\d{4}-\d{2}-\d{2}$', lines[i]):
+        if re.match(r'^\d{4}-\d{2}-\d{2}$', lines[i]):  # np. 2025-09-01
             raw_date = lines[i]
             try:
                 date = datetime.strptime(raw_date, "%Y-%m-%d").strftime("%y%m%d")
@@ -111,6 +121,7 @@ def santander_parser(text):
 
     return account, saldo_pocz, saldo_konc, transactions
 
+
 def pekao_parser(text):
     text_norm = text.replace('\xa0', ' ').replace('\u00A0', ' ')
     lines = [l.strip() for l in text_norm.splitlines() if l.strip()]
@@ -127,19 +138,14 @@ def pekao_parser(text):
     i = 0
     while i < len(lines):
         line = lines[i]
-        if re.match(r'^\d{2}[/.\-]\d{2}[/.\-]\d{4}', line):
+        if re.match(r'^\d{2}/\d{2}/\d{4}', line):
             parts = line.split(maxsplit=2)
             raw_date, raw_amount = parts[0], parts[1]
             desc_parts = [parts[2]] if len(parts) > 2 else []
 
-            date = None
-            for fmt in ("%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y"):
-                try:
-                    date = datetime.strptime(raw_date, fmt).strftime("%y%m%d")
-                    break
-                except:
-                    continue
-            if not date:
+            try:
+                date = datetime.strptime(raw_date, "%d/%m/%Y").strftime("%y%m%d")
+            except:
                 date = datetime.today().strftime("%y%m%d")
 
             amt_clean = clean_amount(raw_amount)
@@ -159,8 +165,12 @@ def pekao_parser(text):
 
     return account, saldo_pocz, saldo_konc, transactions
 
+
 def mbank_parser(text):
     raise NotImplementedError("Parser mBank jeszcze niezaimplementowany.")
+
+
+# ------------------- BANKI -------------------
 
 BANK_PARSERS = {
     "santander": santander_parser,
@@ -168,19 +178,22 @@ BANK_PARSERS = {
     "pekao": pekao_parser
 }
 
+
 def detect_bank(text):
     text_lower = text.lower()
-    if "santander" in text_lower or "santander bank polska" in text_lower or "data operacji" in text_lower:
+    if "santander" in text_lower or "data operacji" in text_lower:
         return "santander"
-    if "bank pekao" in text_lower or "saldo początkowe" in text_lower or "saldo końcowe" in text_lower:
+    if "bank pekao" in text_lower or "saldo poczatkowe" in text_lower or "saldo koncowe" in text_lower:
         return "pekao"
     if "mbank" in text_lower:
         return "mbank"
     return None
 
+
 def convert(pdf_path, output_path):
     text = parse_pdf_text(pdf_path)
 
+    # debug zapis
     with open("debug.txt", "w", encoding="utf-8") as dbg:
         dbg.write(text)
 
@@ -194,4 +207,24 @@ def convert(pdf_path, output_path):
     print(f"📅 Miesiąc wyciągu: {statement_month}")
     print(f"📄 Liczba transakcji: {len(transactions)}")
     if not transactions:
-        print("⚠️ Brak transakcji w
+        print("⚠️ Brak transakcji w pliku PDF.")
+
+    mt940_text = build_mt940(account, saldo_pocz, saldo_konc, transactions)
+    save_mt940_file(mt940_text, output_path)
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 3:
+        print("Użycie: python converter.py input.pdf output.mt940")
+        sys.exit(1)
+
+    input_pdf = sys.argv[1]
+    output_mt940 = sys.argv[2]
+
+    try:
+        convert(input_pdf, output_mt940)
+        print("✅ Konwersja zakończona sukcesem.")
+    except Exception as e:
+        print(f"❌ Błąd: {e}")
+        traceback.print_exc()
+        sys.exit(1)
