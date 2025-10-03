@@ -119,14 +119,13 @@ def santander_parser(text):
 
     return account, saldo_pocz, saldo_konc, transactions
 
-
 def pekao_parser(text):
     text_norm = text.replace('\xa0', ' ').replace('\u00A0', ' ')
     lines = [l.strip() for l in text_norm.splitlines() if l.strip()]
 
     # --- saldo początkowe / końcowe ---
-    saldo_pocz_m = re.search(r"SALDO POCZ\w*\s+([+-]?\d[\d\s,\.]*)", text_norm, re.IGNORECASE)
-    saldo_konc_m = re.search(r"SALDO KO\w*\s+([+-]?\d[\d\s,\.]*)", text_norm, re.IGNORECASE)
+    saldo_pocz_m = re.search(r"SALDO POCZĄTKOWE\s+([+-]?\d[\d\s,\.]*)", text_norm, re.IGNORECASE)
+    saldo_konc_m = re.search(r"SALDO KOŃCOWE\s+([+-]?\d[\d\s,\.]*)", text_norm, re.IGNORECASE)
     saldo_pocz = clean_amount(saldo_pocz_m.group(1)) if saldo_pocz_m else "0.00"
     saldo_konc = clean_amount(saldo_konc_m.group(1)) if saldo_konc_m else "0.00"
 
@@ -136,14 +135,10 @@ def pekao_parser(text):
 
     # --- transakcje ---
     transactions = []
-    date_re = re.compile(r'^\d{2}/\d{2}/\d{4}$')
-    amount_re = re.compile(r'([+-]?\d[\d\s.,]*)$')
-
     i = 0
     while i < len(lines):
         line = lines[i]
-        # linia zaczynająca transakcję (np. "04/08/2025 418,20 PRZELEW ...")
-        if re.match(r'^\d{2}/\d{2}/\d{4}', line):
+        if re.match(r'^\d{2}/\d{2}/\d{4}', line):  # linia z datą
             parts = line.split(maxsplit=2)
             raw_date, raw_amount = parts[0], parts[1]
             desc_parts = [parts[2]] if len(parts) > 2 else []
@@ -154,12 +149,12 @@ def pekao_parser(text):
             except:
                 date = datetime.today().strftime("%y%m%d")
 
-            # kwota
+            # kwota (przelewy wychodzące mają "-" przed liczbą)
             amt_clean = clean_amount(raw_amount)
-            if "-" in raw_amount and not amt_clean.startswith("-"):
+            if raw_amount.startswith('-') and not amt_clean.startswith('-'):
                 amt_clean = "-" + amt_clean
 
-            # opis (może ciągnąć się na wiele linii aż do kolejnej daty lub "Suma obrotów")
+            # opis może być na wielu liniach
             j = i + 1
             while j < len(lines) and not re.match(r'^\d{2}/\d{2}/\d{4}', lines[j]) and not lines[j].lower().startswith("suma obrotów"):
                 desc_parts.append(lines[j])
