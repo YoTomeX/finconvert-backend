@@ -122,57 +122,57 @@ def santander_parser(text):
 
 def pekao_parser(text):
     text_norm = text.replace('\xa0', ' ').replace('\u00A0', ' ')
+    lines = [l.strip() for l in text_norm.splitlines() if l.strip()]
 
-    saldo_pocz_m = re.search(r"SALDO POCZ(Ą|A)TKOWE\s+([-\d\s,\.]+)", text_norm, re.IGNORECASE)
-    saldo_konc_m = re.search(r"SALDO KO(Ń|N)COWE\s+([-\d\s,\.]+)", text_norm, re.IGNORECASE)
-    saldo_pocz = clean_amount(saldo_pocz_m.group(2)) if saldo_pocz_m else "0.00"
-    saldo_konc = clean_amount(saldo_konc_m.group(2)) if saldo_konc_m else "0.00"
+    # --- saldo początkowe / końcowe ---
+    saldo_pocz_m = re.search(r"SALDO POCZ\w*\s+([+-]?\d[\d\s,\.]*)", text_norm, re.IGNORECASE)
+    saldo_konc_m = re.search(r"SALDO KO\w*\s+([+-]?\d[\d\s,\.]*)", text_norm, re.IGNORECASE)
+    saldo_pocz = clean_amount(saldo_pocz_m.group(1)) if saldo_pocz_m else "0.00"
+    saldo_konc = clean_amount(saldo_konc_m.group(1)) if saldo_konc_m else "0.00"
 
-    account_m = re.search(r'(\d{2}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4})', text_norm)
-    account = account_m.group(1).replace(' ', '') if account_m else "00000000000000000000000000"
+    # --- numer rachunku ---
+    account_m = re.search(r'(\d{26})', text_norm)
+    account = account_m.group(1) if account_m else "00000000000000000000000000"
 
+    # --- transakcje ---
     transactions = []
-    pattern_inline = re.compile(r'(\d{2}/\d{2}/\d{4})\s+([+-]?\d{1,3}(?:[ \u00A0]\d{3})*[.,]\d{2})\s+(.+)')
-    date_only_re = re.compile(r'^\d{2}/\d{2}/\d{4}$')
-    amount_re = re.compile(r'([+-]?\d{1,3}(?:[ \u00A0]\d{3})*[.,]\d{2})')
+    date_re = re.compile(r'^\d{2}/\d{2}/\d{4}$')
+    amount_re = re.compile(r'([+-]?\d[\d\s.,]*)$')
 
-    lines = text_norm.splitlines()
     i = 0
     while i < len(lines):
-        line = lines[i].strip()
-        m_inline = pattern_inline.match(line)
-        if m_inline:
-            raw_date, amt_str, desc = m_inline.groups()
-            date = datetime.strptime(raw_date, "%d/%m/%Y").strftime("%y%m%d")
-            amt_clean = clean_amount(amt_str)
-            if '-' in amt_str and not amt_clean.startswith('-'):
-                amt_clean = '-' + amt_clean
-            transactions.append((date, amt_clean, desc.strip()[:65]))
-            i += 1
-        elif date_only_re.match(line):
-            raw_date = line
-            date = datetime.strptime(raw_date, "%d/%m/%Y").strftime("%y%m%d")
-            amt_clean = "0.00"
-            desc_parts = []
-            if i + 1 < len(lines):
-                amt_match = amount_re.search(lines[i + 1])
-                if amt_match:
-                    amt_str = amt_match.group(1)
-                    amt_clean = clean_amount(amt_str)
-                    if '-' in amt_str and not amt_clean.startswith('-'):
-                        amt_clean = '-' + amt_clean
-                    i += 1
+        line = lines[i]
+        # linia zaczynająca transakcję (np. "04/08/2025 418,20 PRZELEW ...")
+        if re.match(r'^\d{2}/\d{2}/\d{4}', line):
+            parts = line.split(maxsplit=2)
+            raw_date, raw_amount = parts[0], parts[1]
+            desc_parts = [parts[2]] if len(parts) > 2 else []
+
+            # konwersja daty
+            try:
+                date = datetime.strptime(raw_date, "%d/%m/%Y").strftime("%y%m%d")
+            except:
+                date = datetime.today().strftime("%y%m%d")
+
+            # kwota
+            amt_clean = clean_amount(raw_amount)
+            if "-" in raw_amount and not amt_clean.startswith("-"):
+                amt_clean = "-" + amt_clean
+
+            # opis (może ciągnąć się na wiele linii aż do kolejnej daty lub "Suma obrotów")
             j = i + 1
-            while j < len(lines) and not date_only_re.match(lines[j].strip()) and not pattern_inline.match(lines[j].strip()):
-                desc_parts.append(lines[j].strip())
+            while j < len(lines) and not re.match(r'^\d{2}/\d{2}/\d{4}', lines[j]) and not lines[j].lower().startswith("suma obrotów"):
+                desc_parts.append(lines[j])
                 j += 1
-            description = " ".join(desc_parts)[:65]
-            transactions.append((date, amt_clean, description))
+
+            desc = " ".join(desc_parts).strip()[:65]
+            transactions.append((date, amt_clean, desc))
             i = j
         else:
             i += 1
 
     return account, saldo_pocz, saldo_konc, transactions
+
 
 def mbank_parser(text):
     raise NotImplementedError("Parser mBank jeszcze niezaimplementowany.")
