@@ -6,13 +6,9 @@ import re
 import pdfplumber
 import traceback
 import io
-import unicodedata
 
 # obsługa polskich znaków w konsoli
-try:
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-except Exception:
-    pass
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 
 def parse_pdf_text(pdf_path):
@@ -23,122 +19,118 @@ def parse_pdf_text(pdf_path):
         raise ValueError(f"Nie można odczytać pliku PDF: {e}")
 
 
-def remove_diacritics(text):
-    if not text:
-        return ""
-    # zamiana ł -> l przed normalizacją
-    text = text.replace('ł', 'l').replace('Ł', 'L')
-    nkfd = unicodedata.normalize('NFKD', text)
-    no_comb = "".join([c for c in nkfd if not unicodedata.combining(c)])
-    # zastąp znaki spoza ASCII spacją (bezpieczniejsze do zapisu CP1250)
-    cleaned = ''.join(ch if 32 <= ord(ch) <= 126 else ' ' for ch in no_comb)
-    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
-    return cleaned
+Aby Twoj kod był zgodny z wymaganiami Symfonii, trzeba wprowadzić **3 kluczowe poprawki** w funkcji `build_mt940` i `clean_amount`. Oto jak je zaimplementować:
 
+---
 
+### **1. Poprawka w `clean_amount` (separator dziesiętny)**
+Symfonia oczekuje **przecinka** w kwotach, a Twoj kod obecnie używa kropki.  
+**Przed:**
+```python
 def clean_amount(amount):
-    """
-    Znormalizuj kwotę do formatu '1234,56' (przecinek jako separator dziesiętny),
-    bez spacji/sep. tysięcy.
-    """
+    # ... inny kod ...
+    return "{:.2f}".format(float(amount))
+```
+
+**Po:**
+```python
+def clean_amount(amount):
+    if not amount:
+        return "0,00"  # Używamy przecinka
+    amount = amount.replace('\xa0', '').replace(' ', '').replace('.', '').replace(',', '.')  # Usuwamy błędy
+    try:
+        return "{:.2f}".format(float(amount)).replace('.', ',')  # Zamień kropkę na przecinek
+    except ValueError:
+        return "0,00"
+```
+
+---
+
+### **2. Poprawka w budowie pola `:86:`**
+Symfonia wymaga specjalnych prefiksów (np. `/TXT/`, `/ORDP/`, `/IBAN/`).  
+**Przed:**
+```python
+mt940.append(f":86:{desc}")
+```
+
+**Po:**
+```python
+def format_description(desc):
+    # Próba wyciągnięcia IBAN
+    iban = re.search(r'PL\d{24}', desc)
+    iban_part = f"/IBAN/{iban.group()}" if iban else ""
+    # Próba wyciągnięcia tytułu (np. "Faktura nr...")
+    title = re.search(r'(Faktura|Przelew).*', desc, re.IGNORECASE)
+    title_part = f"/TITL/{title.group()}" if title else ""
+    # Reszta do /TXT/
+    remaining_desc = re.sub(r'PL\d{24}|(Faktura|Przelew).*', '', desc)
+    return f"{iban_part}{title_part}/TXT/{remaining_desc.strip()[:60]}"
+
+# W funkcji build_mt940:
+mt940.append(f":86:{format_description(desc)}")
+```
+
+---
+
+### **3. Poprawka w budowie pola `:61:`**
+Symfonia wymaga **dwukrotnej daty** (waluty i księgowania) oraz **poprawnego kodu transakcji** (np. `NTRF`).  
+**Przed:**
+```python
+mt940.append(f":61:{date}{txn_type}{amount_clean}NTRFNONREF")
+```
+
+**Po:**
+```python
+# Data waluty = Data księgowania
+mt940.append(f":61:{date}{date}{txn_type}{amount_clean}NTRF")  # Kod NTRF dla transakcji
+```
+
+---
+
+### **Pełny kod z poprawkami (tylko zmiany w funkcji build_mt940 i clean_amount):**
+```python
+def clean_amount(amount):
     if not amount:
         return "0,00"
-    s = str(amount)
-    s = s.replace('\xa0', '').replace(' ', '')
-    # Przygotuj do parsowania: usuń kropki jako separat. tysięcy, zamień przecinek na kropkę
-    # (tak aby float() zadziałał poprawnie dla formatów 1.234,56 i 1,234.56)
-    s = s.replace('.', '').replace(',', '.')
+    amount = amount.replace('\xa0', '').replace(' ', '').replace('.', '').replace(',', '.')  # Usuń błędy
     try:
-        val = float(s)
-    except Exception:
-        # fallback: usuń wszystko poza cyframi, kropką i minusem
-        s2 = re.sub(r'[^0-9\.\-]', '', s)
-        try:
-            val = float(s2) if s2 else 0.0
-        except:
-            val = 0.0
-    # zwróć w formacie z przecinkiem
-    return "{:.2f}".format(val).replace('.', ',')
+        return "{:.2f}".format(float(amount)).replace('.', ',')  # Przecinek jako separator
+    except ValueError:
+        return "0,00"
 
-
-def format_account_for_25(acc_raw):
-    if not acc_raw:
-        return "/PL00000000000000000000000000"
-    acc = re.sub(r'\s+', '', acc_raw).upper()
-    # jeśli zaczyna od PL, ok; jeśli to 26 cyfr -> dopisz PL
-    if not acc.startswith('PL'):
-        if re.match(r'^\d{26}$', acc):
-            acc = 'PL' + acc
-    # dodaj slash zgodnie z przykładem :25:/PL...
-    if not acc.startswith('/'):
-        return f"/{acc}"
-    return acc
-
-
-def split_description(desc):
-    # usuń diakrytyki i niebezpieczne znaki, zredukuj spacje
-    d = remove_diacritics(desc)
-    d = re.sub(r'[^A-Za-z0-9\s\-\.,:;\/KATEX_INLINE_OPENKATEX_INLINE_CLOSE@#&%+=_]', ' ', d)
-    d = re.sub(r'\s+', ' ', d).strip()
-    if not d:
-        d = "BRAK OPISU"
-    # podział na segmenty max 65 znaków
-    segs = [d[i:i+65] for i in range(0, len(d), 65)]
-    return segs
-
+def format_description(desc):
+    iban = re.search(r'PL\d{24}', desc)
+    iban_part = f"/IBAN/{iban.group()}" if iban else ""
+    title = re.search(r'(Faktura|Przelew).*', desc, re.IGNORECASE)
+    title_part = f"/TITL/{title.group()}" if title else ""
+    remaining_desc = re.sub(r'PL\d{24}|(Faktura|Przelew).*', '', desc)
+    return f"{iban_part}{title_part}/TXT/{remaining_desc.strip()[:60]}"
 
 def build_mt940(account_number, saldo_pocz, saldo_konc, transactions):
     today = datetime.today().strftime("%y%m%d")
     start_date = transactions[0][0] if transactions else today
     end_date = transactions[-1][0] if transactions else today
 
-    # format :25:
-    tag25 = f":25:{format_account_for_25(account_number)}"
-
-    # salda - ustal C/D i kwotę bez znaku
-    def cd_and_amount(s):
-        s = s.strip()
-        if s.startswith('-'):
-            return 'D', s.lstrip('-').replace(' ', '')
-        return 'C', s.replace(' ', '')
-
-    cd60, amt60 = cd_and_amount(saldo_pocz)
-    cd62, amt62 = cd_and_amount(saldo_konc)
-
-    # :20: - unikalne
-    reference = datetime.now().strftime("%Y%m%d%H%M%S")[:16]
-
-    lines = [
-        f":20:{reference}",
-        tag25,
+    mt940 = [
+        ":20:STMT",
+        f":25:{account_number}",
         ":28C:00001",
-        f":60F:{cd60}{start_date}PLN{amt60}"
+        f":60F:C{start_date}PLN{saldo_pocz}"
     ]
 
     for date, amount, desc in transactions:
-        # amount ma postać '1234,56' lub '-1234,56'
-        txn_type = 'D' if amount.startswith('-') else 'C'
-        amt_clean = amount.lstrip('-').replace(' ', '')
-        # entry date = MMDD
-        entry = date[2:] if len(date) == 6 else date
-        # kod transakcji: dla obciążeń 641, dla uznań 240 (często spotykane)
-        txn_code = '641' if txn_type == 'D' else '240'
-        # :61:YYMMDD[MMDD]C/DamountNxxxNONREF
-        lines.append(f":61:{date}{entry}{txn_type}{amt_clean}N{txn_code}NONREF")
-        # :86: opisy - podzielone na linie max 65
-        segs = split_description(desc)
-        for seg in segs:
-            lines.append(f":86:{seg}")
+        txn_type = 'C' if not amount.startswith('-') else 'D'
+        amount_clean = amount.lstrip('-')
+        mt940.append(f":61:{date}{date}{txn_type}{amount_clean}NTRF")  # Poprawiony kod
+        mt940.append(f":86:{format_description(desc)}")  # Użycie formatowania
 
-    lines.append(f":62F:{cd62}{end_date}PLN{amt62}")
-    lines.append("-")
-    return "\n".join(lines) + "\n"
+    mt940.append(f":62F:C{end_date}PLN{saldo_konc}")
+    return "\n".join(mt940) + "\n"
 
 
 def save_mt940_file(mt940_text, output_path):
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-    # zapis CP1250 (windows-1250) — Symfonia oczekuje tego kodowania
-    with open(output_path, "w", encoding="windows-1250", errors="replace") as f:
+    with open(output_path, "w", encoding="windows-1250") as f:
         f.write(mt940_text)
 
 
@@ -193,7 +185,7 @@ def santander_parser(text):
         amt_signed = ('-' + amt_clean) if sign == '-' else amt_clean
 
         desc_part = blk[:date_m.start()]
-        desc = re.sub(r'\s+', ' ', desc_part).strip()  # nie obcinamy tutaj, obcinamy w build_mt940
+        desc = re.sub(r'\s+', ' ', desc_part).strip()[:65]
 
         transactions.append((date, amt_signed, desc))
 
@@ -207,8 +199,8 @@ def santander_parser(text):
         text_norm,
         re.IGNORECASE
     )
-    saldo_pocz = clean_amount(saldo_pocz_m.group(2)) if saldo_pocz_m else "0,00"
-    saldo_konc = clean_amount(saldo_konc_m.group(2)) if saldo_konc_m else "0,00"
+    saldo_pocz = clean_amount(saldo_pocz_m.group(2)) if saldo_pocz_m else "0.00"
+    saldo_konc = clean_amount(saldo_konc_m.group(2)) if saldo_konc_m else "0.00"
 
     account_m = re.search(r'(\d{2}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4})', text_norm)
     account = account_m.group(1).replace(' ', '') if account_m else "00000000000000000000000000"
@@ -220,8 +212,8 @@ def pekao_parser(text):
     text_norm = text.replace('\xa0', ' ').replace('\u00A0', ' ')
     saldo_pocz_m = re.search(r"SALDO POCZ(Ą|A)TKOWE\s+([-\d\s,\.]+)", text_norm, re.IGNORECASE)
     saldo_konc_m = re.search(r"SALDO KO(Ń|N)COWE\s+([-\d\s,\.]+)", text_norm, re.IGNORECASE)
-    saldo_pocz = clean_amount(saldo_pocz_m.group(2)) if saldo_pocz_m else "0,00"
-    saldo_konc = clean_amount(saldo_konc_m.group(2)) if saldo_konc_m else "0,00"
+    saldo_pocz = clean_amount(saldo_pocz_m.group(2)) if saldo_pocz_m else "0.00"
+    saldo_konc = clean_amount(saldo_konc_m.group(2)) if saldo_konc_m else "0.00"
 
     account_m = re.search(r'(\d{2}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4})', text_norm)
     account = account_m.group(1).replace(' ', '') if account_m else "00000000000000000000000000"
@@ -242,12 +234,12 @@ def pekao_parser(text):
             amt_clean = clean_amount(amt_str)
             if '-' in amt_str and not amt_clean.startswith('-'):
                 amt_clean = '-' + amt_clean
-            transactions.append((date, amt_clean, desc.strip()))
+            transactions.append((date, amt_clean, desc.strip()[:65]))
             i += 1
         elif date_only_re.match(line):
             raw_date = line
             date = datetime.strptime(raw_date, "%d/%m/%Y").strftime("%y%m%d")
-            amt_clean = "0,00"
+            amt_clean = "0.00"
             desc_parts = []
             if i + 1 < len(lines):
                 amt_match = amount_re.search(lines[i + 1])
@@ -261,7 +253,7 @@ def pekao_parser(text):
             while j < len(lines) and not date_only_re.match(lines[j].strip()) and not pattern_inline.match(lines[j].strip()):
                 desc_parts.append(lines[j].strip())
                 j += 1
-            description = " ".join(desc_parts)
+            description = " ".join(desc_parts)[:65]
             transactions.append((date, amt_clean, description))
             i = j
         else:
