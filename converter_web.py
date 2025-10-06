@@ -26,7 +26,6 @@ def parse_pdf_text(pdf_path):
 def remove_diacritics(text):
     if not text:
         return ""
-    # zamiana ł -> l przed normalizacją
     text = text.replace('ł', 'l').replace('Ł', 'L')
     nkfd = unicodedata.normalize('NFKD', text)
     no_comb = "".join([c for c in nkfd if not unicodedata.combining(c)])
@@ -42,6 +41,7 @@ def clean_amount(amount):
         return "0,00"
     s = str(amount)
     s = s.replace('\xa0', '').replace(' ', '')
+    # usuń separatory tysięcy (kropki), zamień przecinek na kropkę aby zrobić float
     s = s.replace('.', '').replace(',', '.')
     try:
         val = float(s)
@@ -62,14 +62,14 @@ def format_account_for_25(acc_raw):
         return f"/{acc}"
     if not acc.startswith('PL') and re.match(r'^\d{26}$', acc):
         return f"/PL{acc}"
-    # fallback
     if not acc.startswith('/'):
         return f"/{acc}"
     return acc
 
 
 def split_description(desc, max_len=65):
-    d = remove_diacritics(desc)
+    d = remove_diacritics(desc or "")
+    # zachowaj sekwencje ^XX... jako całość
     parts = re.split(r'(\^[0-9]{2}[^^]*)', d)
     segs = []
     cur = ""
@@ -94,20 +94,26 @@ def split_description(desc, max_len=65):
         if cur:
             segs.append(cur)
     segs = [s.strip() for s in segs if s.strip()]
-    if not segs:
-        return ["BRAK OPISU"]
-    return segs
+    return segs if segs else ["BRAK OPISU"]
 
 
 def extract_statement_dates(text, transactions):
+    """
+    Robust extraction of statement start/end (YYMMDD).
+    Handles "Za okres od 01/09/2025\ndo\n30/09/2025" and variants.
+    """
     if not text:
         today = datetime.today()
         return today.strftime("%y%m%d"), today.strftime("%y%m%d")
-    m = re.search(r'od\s+(\d{4}-\d{2}-\d{2}|\d{2}\.\d{2}\.\d{4})\s+do\s+(\d{4}-\d{2}-\d{2}|\d{2}\.\d{2}\.\d{4})', text, re.IGNORECASE)
+
+    # normalize whitespace/newlines
+    t = re.sub(r'[\t\r ]+', ' ', text)
+    # pattern: od DD/MM/YYYY [do|-] DD/MM/YYYY  or od YYYY-MM-DD do YYYY-MM-DD
+    m = re.search(r'od\s+(\d{2}[./-]\d{2}[./-]\d{4}|\d{4}-\d{2}-\d{2})\s*(?:do|-)\s*(\d{2}[./-]\d{2}[./-]\d{4}|\d{4}-\d{2}-\d{2})', t, re.IGNORECASE)
     if m:
         def norm(d):
-            d = d.replace('.', '-')
-            for fmt in ("%Y-%m-%d", "%d-%m-%Y"):
+            d = d.replace('.', '-').replace('/', '-')
+            for fmt in ("%d-%m-%Y", "%Y-%m-%d"):
                 try:
                     return datetime.strptime(d, fmt).strftime("%y%m%d")
                 except:
@@ -116,59 +122,76 @@ def extract_statement_dates(text, transactions):
         a = norm(m.group(1)); b = norm(m.group(2))
         if a and b:
             return a, b
-    m2 = re.search(r'(\d{4}-\d{2}-\d{2})\s*[-–]\s*(\d{4}-\d{2}-\d{2})', text)
-    if m2:
+
+    # alternative: separate 'od ...' and 'do ...' possibly on different lines
+    m1 = re.search(r'od\s+(\d{2}[./-]\d{2}[./-]\d{4})', text, re.IGNORECASE)
+    m2 = re.search(r'do\s+(\d{2}[./-]\d{2}[./-]\d{4})', text, re.IGNORECASE)
+    if m1 and m2:
         try:
-            a = datetime.strptime(m2.group(1), "%Y-%m-%d").strftime("%y%m%d")
-            b = datetime.strptime(m2.group(2), "%Y-%m-%d").strftime("%y%m%d")
+            a = datetime.strptime(m1.group(1).replace('.', '-').replace('/', '-'), "%d-%m-%Y").strftime("%y%m%d")
+            b = datetime.strptime(m2.group(1).replace('.', '-').replace('/', '-'), "%d-%m-%Y").strftime("%y%m%d")
             return a, b
         except:
             pass
+
     if transactions:
         return transactions[0][0], transactions[-1][0]
+
     today = datetime.today().strftime("%y%m%d")
     return today, today
 
 
 def extract_statement_number(text):
+    """
+    Extract statement number and return 6-digit zero-padded string, e.g. '000009'.
+    Handles ':28C:00009', 'Numer wyciągu 0009/2025', 'Wyciag 9' variants.
+    """
     if not text:
         return None
     m = re.search(r':28C:\s*0*([0-9]{1,6})', text)
     if m:
         return m.group(1).zfill(6)
-    m2 = re.search(r'wyci[aą]g(?:\s+nr|\s+nr\.)?\s*[:\-]?\s*0*([0-9]{1,6})', text, re.IGNORECASE)
+    m2 = re.search(r'Numer\s+wyci[aą]gu\s*[:\-]?\s*0*([0-9]{1,6})(?:/(\d{4}))?', text, re.IGNORECASE)
     if m2:
         return m2.group(1).zfill(6)
+    m3 = re.search(r'wyci[aą]g(?:\s+nr|\s+nr\.)?\s*[:\-]?\s*0*([0-9]{1,6})', text, re.IGNORECASE)
+    if m3:
+        return m3.group(1).zfill(6)
     return None
 
 
 def build_mt940(account_number, saldo_pocz, saldo_konc, transactions):
+    # default start/end based on transactions
     today = datetime.today().strftime("%y%m%d")
     start_date = transactions[0][0] if transactions else today
     end_date = transactions[-1][0] if transactions else today
 
-    # override from attached metadata if present
+    # allow caller to override via attached attributes
     start_date = getattr(build_mt940, "_stmt_start", start_date)
     end_date = getattr(build_mt940, "_stmt_end", end_date)
-    ref = getattr(build_mt940, "_orig_ref", None)
-    if not ref:
-        ref = datetime.now().strftime("%Y%m%d%H%M%S")[:16]
+    ref = getattr(build_mt940, "_orig_ref", None) or datetime.now().strftime("%Y%m%d%H%M%S")[:16]
     stmt_no = getattr(build_mt940, "_stmt_no", None)
 
     # ensure :25: is /PL + 26 digits if possible
-    acct = re.sub(r'\s+', '', account_number or '').upper()
+    acct = re.sub(r'\s+', '', (account_number or '')).upper()
     only = re.sub(r'\D', '', acct)
     if only.startswith('PL'):
         only = only[2:]
     if len(only) == 26:
         tag25 = f":25:/PL{only}"
     else:
-        tag25 = format_account_for_25(account_number)
+        tag25 = f":25:{format_account_for_25(account_number)}"
 
-    tag28 = f":28C:{stmt_no}" if stmt_no else ":28C:000001"
+    # ensure stmt_no is zero-padded 6 digits if present
+    if stmt_no:
+        digits = re.sub(r'\D', '', str(stmt_no))
+        digits = digits[-6:].zfill(6)
+        tag28 = f":28C:{digits}"
+    else:
+        tag28 = ":28C:000001"
 
     def cd_and_amount(s):
-        s = s.strip()
+        s = (s or "").strip()
         if s.startswith('-'):
             return 'D', s.lstrip('-').replace(' ', '')
         return 'C', s.replace(' ', '')
@@ -186,8 +209,9 @@ def build_mt940(account_number, saldo_pocz, saldo_konc, transactions):
     for date, amount, desc in transactions:
         txn_type = 'D' if amount.startswith('-') else 'C'
         amt_clean = amount.lstrip('-').replace(' ', '')
+        # no duplicate entry date unless explicitly available
         entry = ''
-        ncode_m = re.search(r'\bN(\d{3})\b', desc)
+        ncode_m = re.search(r'\bN(\d{3})\b', desc or "")
         txn_code = ncode_m.group(1) if ncode_m else ('641' if txn_type == 'D' else '240')
         if entry:
             lines.append(f":61:{date}{entry}{txn_type}{amt_clean}N{txn_code}NONREF")
@@ -204,6 +228,7 @@ def build_mt940(account_number, saldo_pocz, saldo_konc, transactions):
 
 def save_mt940_file(mt940_text, output_path):
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    # zapis CP1250 (windows-1250) — Symfonia oczekuje tego kodowania
     with open(output_path, "w", encoding="windows-1250", errors="replace") as f:
         f.write(mt940_text)
 
