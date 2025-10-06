@@ -38,27 +38,19 @@ def remove_diacritics(text):
 
 
 def clean_amount(amount):
-    """
-    Znormalizuj kwotę do formatu '1234,56' (przecinek jako separator dziesiętny),
-    bez spacji/sep. tysięcy.
-    """
     if not amount:
         return "0,00"
     s = str(amount)
     s = s.replace('\xa0', '').replace(' ', '')
-    # Przygotuj do parsowania: usuń kropki jako separat. tysięcy, zamień przecinek na kropkę
-    # (tak aby float() zadziałał poprawnie dla formatów 1.234,56 i 1,234.56)
     s = s.replace('.', '').replace(',', '.')
     try:
         val = float(s)
     except Exception:
-        # fallback: usuń wszystko poza cyframi, kropką i minusem
         s2 = re.sub(r'[^0-9\.\-]', '', s)
         try:
             val = float(s2) if s2 else 0.0
         except:
             val = 0.0
-    # zwróć w formacie z przecinkiem
     return "{:.2f}".format(val).replace('.', ',')
 
 
@@ -66,20 +58,18 @@ def format_account_for_25(acc_raw):
     if not acc_raw:
         return "/PL00000000000000000000000000"
     acc = re.sub(r'\s+', '', acc_raw).upper()
-    # jeśli zaczyna od PL, ok; jeśli to 26 cyfr -> dopisz PL
-    if not acc.startswith('PL'):
-        if re.match(r'^\d{26}$', acc):
-            acc = 'PL' + acc
-    # dodaj slash zgodnie z przykładem :25:/PL...
+    if acc.startswith('PL') and len(acc) == 28:
+        return f"/{acc}"
+    if not acc.startswith('PL') and re.match(r'^\d{26}$', acc):
+        return f"/PL{acc}"
+    # fallback
     if not acc.startswith('/'):
         return f"/{acc}"
     return acc
 
 
 def split_description(desc, max_len=65):
-    # usuń diakrytyki, ale zachowaj sekwencje ^xx; owijaj zachowując caret jako jednostkę
     d = remove_diacritics(desc)
-    # rozbij na fragmenty zachowując sekwencje zaczynające się od ^
     parts = re.split(r'(\^[0-9]{2}[^^]*)', d)
     segs = []
     cur = ""
@@ -87,7 +77,6 @@ def split_description(desc, max_len=65):
         if not p:
             continue
         if p.startswith('^'):
-            # flush current buffer
             if cur:
                 while len(cur) > max_len:
                     segs.append(cur[:max_len])
@@ -110,15 +99,74 @@ def split_description(desc, max_len=65):
     return segs
 
 
+def extract_statement_dates(text, transactions):
+    if not text:
+        today = datetime.today()
+        return today.strftime("%y%m%d"), today.strftime("%y%m%d")
+    m = re.search(r'od\s+(\d{4}-\d{2}-\d{2}|\d{2}\.\d{2}\.\d{4})\s+do\s+(\d{4}-\d{2}-\d{2}|\d{2}\.\d{2}\.\d{4})', text, re.IGNORECASE)
+    if m:
+        def norm(d):
+            d = d.replace('.', '-')
+            for fmt in ("%Y-%m-%d", "%d-%m-%Y"):
+                try:
+                    return datetime.strptime(d, fmt).strftime("%y%m%d")
+                except:
+                    pass
+            return None
+        a = norm(m.group(1)); b = norm(m.group(2))
+        if a and b:
+            return a, b
+    m2 = re.search(r'(\d{4}-\d{2}-\d{2})\s*[-–]\s*(\d{4}-\d{2}-\d{2})', text)
+    if m2:
+        try:
+            a = datetime.strptime(m2.group(1), "%Y-%m-%d").strftime("%y%m%d")
+            b = datetime.strptime(m2.group(2), "%Y-%m-%d").strftime("%y%m%d")
+            return a, b
+        except:
+            pass
+    if transactions:
+        return transactions[0][0], transactions[-1][0]
+    today = datetime.today().strftime("%y%m%d")
+    return today, today
+
+
+def extract_statement_number(text):
+    if not text:
+        return None
+    m = re.search(r':28C:\s*0*([0-9]{1,6})', text)
+    if m:
+        return m.group(1).zfill(6)
+    m2 = re.search(r'wyci[aą]g(?:\s+nr|\s+nr\.)?\s*[:\-]?\s*0*([0-9]{1,6})', text, re.IGNORECASE)
+    if m2:
+        return m2.group(1).zfill(6)
+    return None
+
+
 def build_mt940(account_number, saldo_pocz, saldo_konc, transactions):
     today = datetime.today().strftime("%y%m%d")
     start_date = transactions[0][0] if transactions else today
     end_date = transactions[-1][0] if transactions else today
 
-    # format :25:
-    tag25 = f":25:{format_account_for_25(account_number)}"
+    # override from attached metadata if present
+    start_date = getattr(build_mt940, "_stmt_start", start_date)
+    end_date = getattr(build_mt940, "_stmt_end", end_date)
+    ref = getattr(build_mt940, "_orig_ref", None)
+    if not ref:
+        ref = datetime.now().strftime("%Y%m%d%H%M%S")[:16]
+    stmt_no = getattr(build_mt940, "_stmt_no", None)
 
-    # salda - ustal C/D i kwotę bez znaku
+    # ensure :25: is /PL + 26 digits if possible
+    acct = re.sub(r'\s+', '', account_number or '').upper()
+    only = re.sub(r'\D', '', acct)
+    if only.startswith('PL'):
+        only = only[2:]
+    if len(only) == 26:
+        tag25 = f":25:/PL{only}"
+    else:
+        tag25 = format_account_for_25(account_number)
+
+    tag28 = f":28C:{stmt_no}" if stmt_no else ":28C:000001"
+
     def cd_and_amount(s):
         s = s.strip()
         if s.startswith('-'):
@@ -128,31 +176,23 @@ def build_mt940(account_number, saldo_pocz, saldo_konc, transactions):
     cd60, amt60 = cd_and_amount(saldo_pocz)
     cd62, amt62 = cd_and_amount(saldo_konc)
 
-    # :20: - unikalne
-    reference = datetime.now().strftime("%Y%m%d%H%M%S")[:16]
-
     lines = [
-        f":20:{reference}",
+        f":20:{ref}",
         tag25,
-        ":28C:00001",
+        tag28,
         f":60F:{cd60}{start_date}PLN{amt60}"
     ]
 
     for date, amount, desc in transactions:
-        # amount ma postać '1234,56' lub '-1234,56'
         txn_type = 'D' if amount.startswith('-') else 'C'
         amt_clean = amount.lstrip('-').replace(' ', '')
-        # entry date: nie dubluj jeśli nie ma drugiej daty — zostaw puste entry
         entry = ''
-        # zachowaj kod transakcji Nxxx jeśli był przekazany w opisie (np. ^... lub Nxxx)
         ncode_m = re.search(r'\bN(\d{3})\b', desc)
         txn_code = ncode_m.group(1) if ncode_m else ('641' if txn_type == 'D' else '240')
-        # :61:YYMMDD[MMDD]C/DamountNxxxNONREF
         if entry:
             lines.append(f":61:{date}{entry}{txn_type}{amt_clean}N{txn_code}NONREF")
         else:
             lines.append(f":61:{date}{txn_type}{amt_clean}N{txn_code}NONREF")
-        # :86: opisy - podzielone tak, żeby zachować sekwencje ^.. i nie łamać ich
         segs = split_description(desc)
         for seg in segs:
             lines.append(f":86:{seg}")
@@ -164,7 +204,6 @@ def build_mt940(account_number, saldo_pocz, saldo_konc, transactions):
 
 def save_mt940_file(mt940_text, output_path):
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-    # zapis CP1250 (windows-1250) — Symfonia oczekuje tego kodowania
     with open(output_path, "w", encoding="windows-1250", errors="replace") as f:
         f.write(mt940_text)
 
@@ -208,7 +247,6 @@ def santander_parser(text):
             continue
 
         raw_amount = plns[0]
-        # pewniejsze wykrywanie znaku: minus bezpośrednio przed liczbą lub słowa-klucze
         sign = ''
         amt_search_re = re.compile(re.escape(raw_amount))
         m_idx = amt_search_re.search(blk)
@@ -218,7 +256,6 @@ def santander_parser(text):
             if '-' in prev:
                 sign = '-'
         if not sign:
-            # fallback: szukaj słów sugerujących obciążenie
             if re.search(r'(obci[aą]rzenie|wyp[ał]ta|PODZIELONY DO ZUS|PODZIELONY DO KRUS|PRZELEW)', blk, re.IGNORECASE):
                 if re.search(r'(PODZIELONY DO ZUS|PODZIELONY DO KRUS)', blk, re.IGNORECASE):
                     sign = '-'
@@ -228,7 +265,7 @@ def santander_parser(text):
         amt_signed = ('-' + amt_clean) if sign == '-' else amt_clean
 
         desc_part = blk[:date_m.start()]
-        desc = re.sub(r'\s+', ' ', desc_part).strip()  # nie obcinamy tutaj, obcinamy w build_mt940
+        desc = re.sub(r'\s+', ' ', desc_part).strip()
 
         transactions.append((date, amt_signed, desc))
 
@@ -320,28 +357,24 @@ def detect_bank(text):
     if not text:
         return None
     t = text.lower()
-    # jeśli plik już jest MT940, zwróć specjalny typ "mt940" (przepuścimy przez zapis bez parsowania)
+    # jeśli plik już jest MT940, zwróć specjalny typ "mt940"
     if ":20:" in text and ":25:" in text and ":61:" in text:
         return "mt940"
-    # oryginalne heurystyki - preferuj konkretne słowa kluczowe
     if "santander" in t or "data operacji" in t:
         return "santander"
     if "bank pekao" in t or "pekao" in t or ("saldo początkowe" in t and "saldo końcowe" in t):
         return "pekao"
     if "mbank" in t or "m-bank" in t:
         return "mbank"
-    # heurystyka na numer rachunku PL z 26 cyframi
     compact = re.sub(r'\s+', '', text.lower())
     if re.search(r'\bpl\d{26}\b', compact) or re.search(r'\b\d{26}\b', compact):
-        # jeśli mamy słowa specyficzne dla Pekao, preferuj pekao
-        if 'elixir' in t or 'saldo pocz' in t or 'saldo konc' in t or 'elixir' in t:
+        if 'elixir' in t or 'saldo pocz' in t or 'saldo konc' in t:
             return "pekao"
         return "santander"
     return None
 
 
 def sanity_check(saldo_pocz, saldo_konc, transactions):
-    # prosty check arytmetyczny: saldo_pocz + suma(transakcje) == saldo_konc (tolerancja 0.02)
     def to_float(s): return float(s.replace(' ', '').replace(',', '.'))
     try:
         s_p = to_float(saldo_pocz)
@@ -371,7 +404,6 @@ def convert(pdf_path, output_path):
     # jeśli wejście już jest w formacie MT940, zapisz je bez dalszej modyfikacji
     if bank == "mt940":
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-        # zapisz surowy tekst w oczekiwanym kodowaniu (windows-1250)
         with open(output_path, "w", encoding="windows-1250", errors="replace") as f:
             f.write(text if isinstance(text, str) else text.decode("utf-8", errors="replace"))
         print("✅ Wejście wygląda jak MT940. Zapisano plik wynikowy bez parsowania.")
@@ -384,7 +416,18 @@ def convert(pdf_path, output_path):
     if not transactions:
         print("⚠️ Brak transakcji w pliku PDF.")
 
-    # sanity_check wykonujemy, logujemy, ale nie blokujemy zapisu aby nie uszkodzić działających workflow
+    # attach extracted metadata for build_mt940
+    stmt_start, stmt_end = extract_statement_dates(text, transactions)
+    stmt_no = extract_statement_number(text)
+    orig_ref_m = re.search(r':20:\s*([^\r\n]+)', text)
+    orig_ref = orig_ref_m.group(1).strip() if orig_ref_m else None
+
+    build_mt940._stmt_start = stmt_start
+    build_mt940._stmt_end = stmt_end
+    build_mt940._stmt_no = stmt_no
+    build_mt940._orig_ref = orig_ref
+
+    # sanity_check: logujemy ostrzeżenie, ale nie blokujemy zapisu
     try:
         ok, msg = sanity_check(saldo_pocz, saldo_konc, transactions)
     except Exception as e:
