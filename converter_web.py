@@ -404,9 +404,11 @@ def pekao_parser(text):
             amt_clean = clean_amount(amt_str)
             if '-' in amt_str and not amt_clean.startswith('-'):
                 amt_clean = '-' + amt_clean
-            key = (date, amt_clean, (desc or "")[:60])
+            # normalize desc: usuń page headery które mogą się wciąć do opisu
+            desc_norm = re.sub(r'Strona\s*\d+/\d+|Wyszczegolnienie transakcji|Data waluty|Kwota|Opis operacji', '', desc, flags=re.IGNORECASE).strip()
+            key = (date, amt_clean, (desc_norm or "")[:120])
             if key not in seen:
-                transactions.append((date, amt_clean, desc.strip()))
+                transactions.append((date, amt_clean, desc_norm))
                 seen.add(key)
             i += 1
             continue
@@ -434,7 +436,8 @@ def pekao_parser(text):
                 desc_parts.append(lines[j].strip())
                 j += 1
             description = " ".join(desc_parts)
-            key = (date, amt_clean, (description or "")[:60])
+            description = re.sub(r'Strona\s*\d+/\d+|Wyszczegolnienie transakcji|Data waluty|Kwota|Opis operacji', '', description, flags=re.IGNORECASE).strip()
+            key = (date, amt_clean, (description or "")[:120])
             if key not in seen:
                 transactions.append((date, amt_clean, description))
                 seen.add(key)
@@ -443,13 +446,13 @@ def pekao_parser(text):
 
         i += 1
 
-    # 2) Globalny skan dokumentu (uchwyci transakcje z kolejnych stron)
+    # 2) Globalny skan dokumentu (uchwyci transakcje złamane między stronami)
     global_pattern = re.compile(
         r'(\d{2}/\d{2}/\d{4})'                       # data
         r'([^\n]{0,120}?)'                           # filler
         r'([+-]?\d{1,3}(?:[ \u00A0]\d{3})*[.,]\d{2})' # kwota
         r'(?:[^\S\r\n]*\n)?'                         # optional newline gap
-        r'(.{0,400}?)'                               # opis
+        r'(.{0,500}?)'                               # opis (większy fragment)
         r'(?=(?:\n\d{2}/\d{2}/\d{4})|\Z)',           # lookahead
         re.DOTALL
     )
@@ -465,20 +468,40 @@ def pekao_parser(text):
         amt_clean = clean_amount(raw_amt)
         if '-' in raw_amt and not amt_clean.startswith('-'):
             amt_clean = '-' + amt_clean
-        key = (date, amt_clean, (raw_desc or "")[:60])
+        raw_desc = re.sub(r'Strona\s*\d+/\d+|Wyszczegolnienie transakcji|Data waluty|Kwota|Opis operacji', '', raw_desc, flags=re.IGNORECASE).strip()
+        key = (date, amt_clean, (raw_desc or "")[:120])
         if key not in seen:
             transactions.append((date, amt_clean, raw_desc))
             seen.add(key)
 
-    # 3) Sortuj transakcje po dacie i kwocie dla stabilności
+    # 3) Post-processing dedupe: grupuj po (date, amount) i wybierz najdłuższy opis
+    grouped = {}
+    for d, a, desc in transactions:
+        k = (d, a)
+        desc_norm = (desc or "").strip()
+        # jeśli opis zawiera tylko krótkie nagłówki, traktuj jako pusty
+        if re.fullmatch(r'(PRZELEW|PRZELEW KRAJOWY|PRZELEW INTERNET|PRZELEW PODZIELONY DO ZUS/KRUS)?', desc_norm, flags=re.IGNORECASE):
+            desc_norm = ""
+        if k not in grouped:
+            grouped[k] = desc_norm
+        else:
+            # wybierz dłuższy, bardziej szczegółowy opis
+            if len(desc_norm) > len(grouped[k]):
+                grouped[k] = desc_norm
+
+    deduped = []
+    for (d, a), desc in grouped.items():
+        deduped.append((d, a, desc))
+
+    # 4) Sortuj transakcje po dacie i kwocie dla stabilności
     def txn_sort_key(t):
         try:
             return (int(t[0]), abs(float(t[1].replace(',', '.'))))
         except:
             return (int(t[0]) if t[0].isdigit() else 0, 0)
-    transactions.sort(key=txn_sort_key)
+    deduped.sort(key=txn_sort_key)
 
-    return account, saldo_pocz, saldo_konc, transactions
+    return account, saldo_pocz, saldo_konc, deduped
 
 
 def mbank_parser(text):
