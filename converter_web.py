@@ -21,7 +21,11 @@ def parse_pdf_text(pdf_path):
         with pdfplumber.open(pdf_path) as pdf:
             return "\n".join((page.extract_text() or "") for page in pdf.pages)
     except Exception as e:
-        raise ValueError(f"Nie można odczytać pliku PDF: {e}")
+        import traceback
+        print("❌ ERROR: Nie udało się otworzyć PDF:", pdf_path)
+        traceback.print_exc()
+        raise
+
 
 
 def remove_diacritics(text):
