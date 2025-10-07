@@ -68,33 +68,81 @@ def format_account_for_25(acc_raw):
     return acc
 
 
-def split_description(desc, max_len=65):
+def split_description(desc, first_len=120, next_len=65):
     d = remove_diacritics(desc or "")
+    # zachowaj sekwencje ^.. jako tokeny
     parts = re.split(r'(\^[0-9]{2}[^^]*)', d)
-    segs = []
-    cur = ""
-    for p in parts:
-        if not p:
-            continue
-        if p.startswith('^'):
-            if cur:
-                while len(cur) > max_len:
-                    segs.append(cur[:max_len])
-                    cur = cur[max_len:]
-                if cur:
-                    segs.append(cur)
-                cur = ""
-            segs.append(p.strip())
-        else:
-            cur += p
-    if cur:
-        while len(cur) > max_len:
-            segs.append(cur[:max_len])
-            cur = cur[max_len:]
-        if cur:
-            segs.append(cur)
-    segs = [s.strip() for s in segs if s.strip()]
-    return segs if segs else ["BRAK OPISU"]
+    tokens = [p.strip() for p in parts if p and p.strip()]
+    if not tokens:
+        return ["BRAK OPISU"]
+    # zbuduj pierwszą linię łącznie z tokenami do first_len
+    first = ""
+    i = 0
+    while i < len(tokens) and (not first or len(first) + 1 + len(tokens[i]) <= first_len):
+        first = (first + " " + tokens[i]).strip()
+        i += 1
+    segs = [first] if first else []
+    rest = "".join(tokens[i:]) if i < len(tokens) else ""
+    while rest:
+        segs.append(rest[:next_len])
+        rest = rest[next_len:]
+    return [s.strip() for s in segs if s.strip()]
+
+
+def enrich_desc_for_86(desc):
+    if not desc:
+        return ""
+    d = desc
+    # wyciągnij IBAN (PLxxxx...) z dowolnymi spacjami i dodaj na początek
+    iban_m = re.search(r'(PL[\s-]?\d{2}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{2})', desc, re.IGNORECASE)
+    if iban_m:
+        iban = re.sub(r'[\s-]+', '', iban_m.group(1)).upper()
+        if not d.startswith(iban):
+            d = iban + " " + d
+    else:
+        # jeśli jest 26 cyfr bez PL, dopisz PL prefix i dodaj na początek
+        digits26 = re.search(r'(?<!\d)(\d{26})(?!\d)', re.sub(r'\s+', '', desc))
+        if digits26:
+            acct = digits26.group(1)
+            pref = "PL" + acct
+            if not d.startswith(pref):
+                d = pref + " " + d
+
+    # wydobądź numer faktury/ref i dołącz na końcu, jeśli istnieje
+    # wzorce: F/..., Faktura ..., Nr ref .:, SACC, etc.
+    ref_patterns = [
+        r'(Nr ref\s*[:\.]?\s*[A-Z0-9\/\-\._]+)',
+        r'(Nr ref\s*[:\.]?\s*[0-9A-Z\-/\.]+)',
+        r'(F\/\d+[^\s]*)',
+        r'(FAKTUR[AY]\s*[A-Z0-9\/\-\._]*)',
+        r'(SACC\s*\d+)',
+        r'(Faktura\s*[:\s]*[A-Z0-9\/\-\._]+)'
+    ]
+    refs = []
+    for p in ref_patterns:
+        m = re.search(p, desc, re.IGNORECASE)
+        if m:
+            refs.append(m.group(1).strip())
+    if refs:
+        # append unique refs
+        for r in refs:
+            if r.upper() not in d.upper():
+                d = (d + " " + r).strip()
+
+    # próbuj wydobyć nazwę kontrahenta: fragmenty z dużych liter i spacje, ogranicz długość
+    # Szybka heurystyka: jeśli w opisie pojawiają się długie bloki wielkich liter, wyróżnij je
+    caps = re.findall(r'\b[A-ZĄĆĘŁŃÓŚŹŻ]{3,}(?:\s+[A-ZĄĆĘŁŃÓŚŹŻ0-9\.\,\-]{2,}){0,6}', desc)
+    if caps:
+        # prefer first occurrence that's not just 'PRZELEW' etc.
+        for c in caps:
+            if not re.search(r'PRZELEW|FAKTURA|SACC|NR|NUMER|IBAN|PL', c, re.IGNORECASE):
+                if c.strip() and c.strip().upper() not in d.upper():
+                    d = (d + " " + c.strip()).strip()
+                    break
+
+    # final cleanup: collapse multiple spaces
+    d = re.sub(r'\s+', ' ', d).strip()
+    return d
 
 
 def extract_statement_dates(text, transactions):
@@ -221,18 +269,16 @@ def build_mt940(account_number, saldo_pocz, saldo_konc, transactions):
             entry = date[2:]  # duplicate booking MMDD to match typical exporter
 
         # Determine transaction code: prefer explicit Nxxx, caret-style codes, or heuristics
-        ncode_m = None
-        # look for patterns like N562 or N 562
         ncode_m = re.search(r'\bN\s*0*?(\d{2,3})\b', desc or '', re.IGNORECASE)
         if not ncode_m:
             ncode_m = re.search(r'\^(\d{2,3})\^', desc or '')
         if ncode_m:
             txn_code = ncode_m.group(1).zfill(3)
         else:
-            # heuristics mapping
+            # heurystyka
             if re.search(r'PODZIELON|ZUS|KRUS', desc or '', re.IGNORECASE):
                 txn_code = '562'
-            elif re.search(r'INTERNET|M/B|MBANK', desc or '', re.IGNORECASE):
+            elif re.search(r'INTERNET|M/B|P4', desc or '', re.IGNORECASE):
                 txn_code = '775'
             elif re.search(r'ELIXIR|EXPRESS', desc or '', re.IGNORECASE):
                 txn_code = '178'
@@ -241,9 +287,12 @@ def build_mt940(account_number, saldo_pocz, saldo_konc, transactions):
             else:
                 txn_code = '641' if txn_type == 'D' else '240'
 
+        # build :61 with entry
         lines.append(f":61:{date}{entry}{txn_type}{amt_clean}N{txn_code}NONREF")
 
-        segs = split_description(desc)
+        # enrich description before splitting to :86
+        enriched = enrich_desc_for_86(desc or "")
+        segs = split_description(enriched)
         for seg in segs:
             lines.append(f":86:{seg}")
 
@@ -254,6 +303,7 @@ def build_mt940(account_number, saldo_pocz, saldo_konc, transactions):
 
 def save_mt940_file(mt940_text, output_path):
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    # zapis CP1250 (windows-1250) — Symfonia oczekuje tego kodowania
     with open(output_path, "w", encoding="windows-1250", errors="replace") as f:
         f.write(mt940_text)
 
@@ -450,6 +500,7 @@ def convert(pdf_path, output_path):
     if not bank or (bank not in BANK_PARSERS and bank != "mt940"):
         raise ValueError("Nie rozpoznano banku lub parser niezaimplementowany.")
 
+    # jeśli wejście już jest w formacie MT940, zapisz je bez dalszej modyfikacji
     if bank == "mt940":
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
         with open(output_path, "w", encoding="windows-1250", errors="replace") as f:
