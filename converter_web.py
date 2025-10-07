@@ -109,10 +109,8 @@ def enrich_desc_for_86(desc):
                 d = pref + " " + d
 
     # wydobądź numer faktury/ref i dołącz na końcu, jeśli istnieje
-    # wzorce: F/..., Faktura ..., Nr ref .:, SACC, etc.
     ref_patterns = [
         r'(Nr ref\s*[:\.]?\s*[A-Z0-9\/\-\._]+)',
-        r'(Nr ref\s*[:\.]?\s*[0-9A-Z\-/\.]+)',
         r'(F\/\d+[^\s]*)',
         r'(FAKTUR[AY]\s*[A-Z0-9\/\-\._]*)',
         r'(SACC\s*\d+)',
@@ -124,36 +122,27 @@ def enrich_desc_for_86(desc):
         if m:
             refs.append(m.group(1).strip())
     if refs:
-        # append unique refs
         for r in refs:
             if r.upper() not in d.upper():
                 d = (d + " " + r).strip()
 
     # próbuj wydobyć nazwę kontrahenta: fragmenty z dużych liter i spacje, ogranicz długość
-    # Szybka heurystyka: jeśli w opisie pojawiają się długie bloki wielkich liter, wyróżnij je
     caps = re.findall(r'\b[A-ZĄĆĘŁŃÓŚŹŻ]{3,}(?:\s+[A-ZĄĆĘŁŃÓŚŹŻ0-9\.\,\-]{2,}){0,6}', desc)
     if caps:
-        # prefer first occurrence that's not just 'PRZELEW' etc.
         for c in caps:
             if not re.search(r'PRZELEW|FAKTURA|SACC|NR|NUMER|IBAN|PL', c, re.IGNORECASE):
                 if c.strip() and c.strip().upper() not in d.upper():
                     d = (d + " " + c.strip()).strip()
                     break
 
-    # final cleanup: collapse multiple spaces
     d = re.sub(r'\s+', ' ', d).strip()
     return d
 
 
 def extract_statement_dates(text, transactions):
-    """
-    Robust extraction of statement start/end (YYMMDD).
-    Handles "Za okres od 01/09/2025\ndo\n30/09/2025" and variants.
-    """
     if not text:
         today = datetime.today()
         return today.strftime("%y%m%d"), today.strftime("%y%m%d")
-
     t = re.sub(r'[\t\r ]+', ' ', text)
     m = re.search(
         r'od\s+(\d{2}[./-]\d{2}[./-]\d{4}|\d{4}-\d{2}-\d{2})\s*(?:do|-)\s*(\d{2}[./-]\d{2}[./-]\d{4}|\d{4}-\d{2}-\d{2})',
@@ -170,7 +159,6 @@ def extract_statement_dates(text, transactions):
         a = norm(m.group(1)); b = norm(m.group(2))
         if a and b:
             return a, b
-
     m1 = re.search(r'od\s+(\d{2}[./-]\d{2}[./-]\d{4})', text, re.IGNORECASE)
     m2 = re.search(r'do\s+(\d{2}[./-]\d{2}[./-]\d{4})', text, re.IGNORECASE)
     if m1 and m2:
@@ -180,19 +168,13 @@ def extract_statement_dates(text, transactions):
             return a, b
         except:
             pass
-
     if transactions:
         return transactions[0][0], transactions[-1][0]
-
     today = datetime.today().strftime("%y%m%d")
     return today, today
 
 
 def extract_statement_number(text):
-    """
-    Extract statement number and return 6-digit zero-padded string, e.g. '000009'.
-    Handles ':28C:00009', 'Numer wyciągu 0009/2025', 'Wyciag 9' variants.
-    """
     if not text:
         return None
     m = re.search(r':28C:\s*0*([0-9]{1,6})', text)
@@ -212,6 +194,7 @@ def build_mt940(account_number, saldo_pocz, saldo_konc, transactions):
     start_date = transactions[0][0] if transactions else today
     end_date = transactions[-1][0] if transactions else today
 
+    # override via metadata if set
     start_date = getattr(build_mt940, "_stmt_start", start_date)
     end_date = getattr(build_mt940, "_stmt_end", end_date)
     ref = getattr(build_mt940, "_orig_ref", None) or datetime.now().strftime("%Y%m%d%H%M%S")[:16]
@@ -266,7 +249,7 @@ def build_mt940(account_number, saldo_pocz, saldo_konc, transactions):
             except:
                 entry = ''
         if not entry:
-            entry = date[2:]  # duplicate booking MMDD to match typical exporter
+            entry = date[2:]  # duplicate booking MMDD
 
         # Determine transaction code: prefer explicit Nxxx, caret-style codes, or heuristics
         ncode_m = re.search(r'\bN\s*0*?(\d{2,3})\b', desc or '', re.IGNORECASE)
@@ -275,7 +258,6 @@ def build_mt940(account_number, saldo_pocz, saldo_konc, transactions):
         if ncode_m:
             txn_code = ncode_m.group(1).zfill(3)
         else:
-            # heurystyka
             if re.search(r'PODZIELON|ZUS|KRUS', desc or '', re.IGNORECASE):
                 txn_code = '562'
             elif re.search(r'INTERNET|M/B|P4', desc or '', re.IGNORECASE):
@@ -366,6 +348,7 @@ def santander_parser(text):
 
         desc_part = blk[:date_m.start()]
         desc = re.sub(r'\s+', ' ', desc_part).strip()
+
         transactions.append((date, amt_signed, desc))
 
     saldo_pocz_m = re.search(
@@ -389,15 +372,19 @@ def santander_parser(text):
 
 def pekao_parser(text):
     text_norm = text.replace('\xa0', ' ').replace('\u00A0', ' ')
+    # salda
     saldo_pocz_m = re.search(r"SALDO POCZ(Ą|A)TKOWE\s+([-\d\s,\.]+)", text_norm, re.IGNORECASE)
     saldo_konc_m = re.search(r"SALDO KO(Ń|N)COWE\s+([-\d\s,\.]+)", text_norm, re.IGNORECASE)
     saldo_pocz = clean_amount(saldo_pocz_m.group(2)) if saldo_pocz_m else "0,00"
     saldo_konc = clean_amount(saldo_konc_m.group(2)) if saldo_konc_m else "0,00"
-
+    # konto
     account_m = re.search(r'(\d{2}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4})', text_norm)
     account = account_m.group(1).replace(' ', '') if account_m else "00000000000000000000000000"
 
     transactions = []
+    seen = set()
+
+    # 1) Linia-po-linii
     pattern_inline = re.compile(r'(\d{2}/\d{2}/\d{4})\s+([+-]?\d{1,3}(?:[ \u00A0]\d{3})*[.,]\d{2})\s+(.+)')
     date_only_re = re.compile(r'^\d{2}/\d{2}/\d{4}$')
     amount_re = re.compile(r'([+-]?\d{1,3}(?:[ \u00A0]\d{3})*[.,]\d{2})')
@@ -409,17 +396,31 @@ def pekao_parser(text):
         m_inline = pattern_inline.match(line)
         if m_inline:
             raw_date, amt_str, desc = m_inline.groups()
-            date = datetime.strptime(raw_date, "%d/%m/%Y").strftime("%y%m%d")
+            try:
+                date = datetime.strptime(raw_date, "%d/%m/%Y").strftime("%y%m%d")
+            except:
+                i += 1
+                continue
             amt_clean = clean_amount(amt_str)
             if '-' in amt_str and not amt_clean.startswith('-'):
                 amt_clean = '-' + amt_clean
-            transactions.append((date, amt_clean, desc.strip()))
+            key = (date, amt_clean, (desc or "")[:60])
+            if key not in seen:
+                transactions.append((date, amt_clean, desc.strip()))
+                seen.add(key)
             i += 1
-        elif date_only_re.match(line):
+            continue
+
+        if date_only_re.match(line):
             raw_date = line
-            date = datetime.strptime(raw_date, "%d/%m/%Y").strftime("%y%m%d")
+            try:
+                date = datetime.strptime(raw_date, "%d/%m/%Y").strftime("%y%m%d")
+            except:
+                i += 1
+                continue
             amt_clean = "0,00"
             desc_parts = []
+            # następna linia może zawierać kwotę
             if i + 1 < len(lines):
                 amt_match = amount_re.search(lines[i + 1])
                 if amt_match:
@@ -427,16 +428,55 @@ def pekao_parser(text):
                     amt_clean = clean_amount(amt_str)
                     if '-' in amt_str and not amt_clean.startswith('-'):
                         amt_clean = '-' + amt_clean
-                i += 1
+                    i += 1
             j = i + 1
             while j < len(lines) and not date_only_re.match(lines[j].strip()) and not pattern_inline.match(lines[j].strip()):
                 desc_parts.append(lines[j].strip())
                 j += 1
             description = " ".join(desc_parts)
-            transactions.append((date, amt_clean, description))
+            key = (date, amt_clean, (description or "")[:60])
+            if key not in seen:
+                transactions.append((date, amt_clean, description))
+                seen.add(key)
             i = j
-        else:
-            i += 1
+            continue
+
+        i += 1
+
+    # 2) Globalny skan dokumentu (uchwyci transakcje z kolejnych stron)
+    global_pattern = re.compile(
+        r'(\d{2}/\d{2}/\d{4})'                       # data
+        r'([^\n]{0,120}?)'                           # filler
+        r'([+-]?\d{1,3}(?:[ \u00A0]\d{3})*[.,]\d{2})' # kwota
+        r'(?:[^\S\r\n]*\n)?'                         # optional newline gap
+        r'(.{0,400}?)'                               # opis
+        r'(?=(?:\n\d{2}/\d{2}/\d{4})|\Z)',           # lookahead
+        re.DOTALL
+    )
+
+    for m in global_pattern.finditer(text_norm):
+        raw_date = m.group(1)
+        raw_amt = m.group(3)
+        raw_desc = m.group(4).strip().replace('\n', ' ')
+        try:
+            date = datetime.strptime(raw_date, "%d/%m/%Y").strftime("%y%m%d")
+        except:
+            continue
+        amt_clean = clean_amount(raw_amt)
+        if '-' in raw_amt and not amt_clean.startswith('-'):
+            amt_clean = '-' + amt_clean
+        key = (date, amt_clean, (raw_desc or "")[:60])
+        if key not in seen:
+            transactions.append((date, amt_clean, raw_desc))
+            seen.add(key)
+
+    # 3) Sortuj transakcje po dacie i kwocie dla stabilności
+    def txn_sort_key(t):
+        try:
+            return (int(t[0]), abs(float(t[1].replace(',', '.'))))
+        except:
+            return (int(t[0]) if t[0].isdigit() else 0, 0)
+    transactions.sort(key=txn_sort_key)
 
     return account, saldo_pocz, saldo_konc, transactions
 
@@ -500,7 +540,7 @@ def convert(pdf_path, output_path):
     if not bank or (bank not in BANK_PARSERS and bank != "mt940"):
         raise ValueError("Nie rozpoznano banku lub parser niezaimplementowany.")
 
-    # jeśli wejście już jest w formacie MT940, zapisz je bez dalszej modyfikacji
+    # jeśli wejście już jest w formacie MT940, zapisz je bez parsowania
     if bank == "mt940":
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
         with open(output_path, "w", encoding="windows-1250", errors="replace") as f:
