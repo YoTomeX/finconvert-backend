@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import sys
 import os
 import locale
@@ -69,7 +70,6 @@ def format_account_for_25(acc_raw):
 
 def split_description(desc, max_len=65):
     d = remove_diacritics(desc or "")
-    # zachowaj sekwencje ^XX... jako całość
     parts = re.split(r'(\^[0-9]{2}[^^]*)', d)
     segs = []
     cur = ""
@@ -106,10 +106,10 @@ def extract_statement_dates(text, transactions):
         today = datetime.today()
         return today.strftime("%y%m%d"), today.strftime("%y%m%d")
 
-    # normalize whitespace/newlines
     t = re.sub(r'[\t\r ]+', ' ', text)
-    # pattern: od DD/MM/YYYY [do|-] DD/MM/YYYY  or od YYYY-MM-DD do YYYY-MM-DD
-    m = re.search(r'od\s+(\d{2}[./-]\d{2}[./-]\d{4}|\d{4}-\d{2}-\d{2})\s*(?:do|-)\s*(\d{2}[./-]\d{2}[./-]\d{4}|\d{4}-\d{2}-\d{2})', t, re.IGNORECASE)
+    m = re.search(
+        r'od\s+(\d{2}[./-]\d{2}[./-]\d{4}|\d{4}-\d{2}-\d{2})\s*(?:do|-)\s*(\d{2}[./-]\d{2}[./-]\d{4}|\d{4}-\d{2}-\d{2})',
+        t, re.IGNORECASE)
     if m:
         def norm(d):
             d = d.replace('.', '-').replace('/', '-')
@@ -123,7 +123,6 @@ def extract_statement_dates(text, transactions):
         if a and b:
             return a, b
 
-    # alternative: separate 'od ...' and 'do ...' possibly on different lines
     m1 = re.search(r'od\s+(\d{2}[./-]\d{2}[./-]\d{4})', text, re.IGNORECASE)
     m2 = re.search(r'do\s+(\d{2}[./-]\d{2}[./-]\d{4})', text, re.IGNORECASE)
     if m1 and m2:
@@ -161,18 +160,15 @@ def extract_statement_number(text):
 
 
 def build_mt940(account_number, saldo_pocz, saldo_konc, transactions):
-    # default start/end based on transactions
     today = datetime.today().strftime("%y%m%d")
     start_date = transactions[0][0] if transactions else today
     end_date = transactions[-1][0] if transactions else today
 
-    # allow caller to override via attached attributes
     start_date = getattr(build_mt940, "_stmt_start", start_date)
     end_date = getattr(build_mt940, "_stmt_end", end_date)
     ref = getattr(build_mt940, "_orig_ref", None) or datetime.now().strftime("%Y%m%d%H%M%S")[:16]
     stmt_no = getattr(build_mt940, "_stmt_no", None)
 
-    # ensure :25: is /PL + 26 digits if possible
     acct = re.sub(r'\s+', '', (account_number or '')).upper()
     only = re.sub(r'\D', '', acct)
     if only.startswith('PL'):
@@ -182,7 +178,6 @@ def build_mt940(account_number, saldo_pocz, saldo_konc, transactions):
     else:
         tag25 = f":25:{format_account_for_25(account_number)}"
 
-    # ensure stmt_no is zero-padded 6 digits if present
     if stmt_no:
         digits = re.sub(r'\D', '', str(stmt_no))
         digits = digits[-6:].zfill(6)
@@ -209,14 +204,45 @@ def build_mt940(account_number, saldo_pocz, saldo_konc, transactions):
     for date, amount, desc in transactions:
         txn_type = 'D' if amount.startswith('-') else 'C'
         amt_clean = amount.lstrip('-').replace(' ', '')
-        # no duplicate entry date unless explicitly available
+
+        # determine entry date: prefer explicit second date in description, otherwise duplicate booking MMDD
         entry = ''
-        ncode_m = re.search(r'\bN(\d{3})\b', desc or "")
-        txn_code = ncode_m.group(1) if ncode_m else ('641' if txn_type == 'D' else '240')
-        if entry:
-            lines.append(f":61:{date}{entry}{txn_type}{amt_clean}N{txn_code}NONREF")
+        m_date2 = re.search(r'(\d{4}-\d{2}-\d{2}|\d{2}/\d{2}/\d{4})', desc or '')
+        if m_date2:
+            raw2 = m_date2.group(1)
+            try:
+                if '/' in raw2:
+                    entry = datetime.strptime(raw2, "%d/%m/%Y").strftime("%m%d")
+                else:
+                    entry = datetime.strptime(raw2, "%Y-%m-%d").strftime("%m%d")
+            except:
+                entry = ''
+        if not entry:
+            entry = date[2:]  # duplicate booking MMDD to match typical exporter
+
+        # Determine transaction code: prefer explicit Nxxx, caret-style codes, or heuristics
+        ncode_m = None
+        # look for patterns like N562 or N 562
+        ncode_m = re.search(r'\bN\s*0*?(\d{2,3})\b', desc or '', re.IGNORECASE)
+        if not ncode_m:
+            ncode_m = re.search(r'\^(\d{2,3})\^', desc or '')
+        if ncode_m:
+            txn_code = ncode_m.group(1).zfill(3)
         else:
-            lines.append(f":61:{date}{txn_type}{amt_clean}N{txn_code}NONREF")
+            # heuristics mapping
+            if re.search(r'PODZIELON|ZUS|KRUS', desc or '', re.IGNORECASE):
+                txn_code = '562'
+            elif re.search(r'INTERNET|M/B|MBANK', desc or '', re.IGNORECASE):
+                txn_code = '775'
+            elif re.search(r'ELIXIR|EXPRESS', desc or '', re.IGNORECASE):
+                txn_code = '178'
+            elif re.search(r'PRZELEW KRAJOWY MI', desc or '', re.IGNORECASE):
+                txn_code = '240'
+            else:
+                txn_code = '641' if txn_type == 'D' else '240'
+
+        lines.append(f":61:{date}{entry}{txn_type}{amt_clean}N{txn_code}NONREF")
+
         segs = split_description(desc)
         for seg in segs:
             lines.append(f":86:{seg}")
@@ -228,7 +254,6 @@ def build_mt940(account_number, saldo_pocz, saldo_konc, transactions):
 
 def save_mt940_file(mt940_text, output_path):
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-    # zapis CP1250 (windows-1250) — Symfonia oczekuje tego kodowania
     with open(output_path, "w", encoding="windows-1250", errors="replace") as f:
         f.write(mt940_text)
 
@@ -291,7 +316,6 @@ def santander_parser(text):
 
         desc_part = blk[:date_m.start()]
         desc = re.sub(r'\s+', ' ', desc_part).strip()
-
         transactions.append((date, amt_signed, desc))
 
     saldo_pocz_m = re.search(
@@ -426,7 +450,6 @@ def convert(pdf_path, output_path):
     if not bank or (bank not in BANK_PARSERS and bank != "mt940"):
         raise ValueError("Nie rozpoznano banku lub parser niezaimplementowany.")
 
-    # jeśli wejście już jest w formacie MT940, zapisz je bez dalszej modyfikacji
     if bank == "mt940":
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
         with open(output_path, "w", encoding="windows-1250", errors="replace") as f:
