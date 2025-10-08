@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 import sys
 import os
-import locale
-from datetime import datetime
 import re
-import pdfplumber
-import traceback
 import io
+import traceback
 import unicodedata
+from datetime import datetime
+import pdfplumber
 
 try:
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
@@ -81,19 +80,19 @@ def split_description(desc, first_len=200, next_len=65):
 def _strip_page_noise(s):
     if not s:
         return s
-    return re.sub(r'(Strona\\s*\\d+\\s*/\\s*\\d+|PageNumber\\s*[:=].*|Wyszczegolnienie transakcji|Wyszczegolnienie|Data waluty|Kwota|Opis operacji)', '', s, flags=re.IGNORECASE).strip()
+    return re.sub(r'(Strona\s*\d+\s*/\s*\d+|PageNumber\s*[:=].*|Wyszczegolnienie transakcji|Wyszczegolnienie|Data waluty|Kwota|Opis operacji)', '', s, flags=re.IGNORECASE).strip()
 
 def enrich_desc_for_86(desc):
     if not desc:
         return ""
     d = _strip_page_noise(desc)
-    iban_m = re.search(r'(PL[\\s-]?\\d{2}[\\s-]?\\d{4}[\\s-]?\\d{4}[\\s-]?\\d{4}[\\s-]?\\d{4}[\\s-]?\\d{4}[\\s-]?\\d{2})', d, re.IGNORECASE)
+    iban_m = re.search(r'(PL[\s-]?\d{2}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{2})', d, re.IGNORECASE)
     if iban_m:
-        iban = re.sub(r'[\\s-]+', '', iban_m.group(1)).upper()
+        iban = re.sub(r'[\s-]+', '', iban_m.group(1)).upper()
         if not d.startswith(iban):
             d = iban + " " + d
     else:
-        digits26 = re.search(r'(?<!\\d)(\\d{26})(?!\\d)', re.sub(r'\\s+', '', d))
+        digits26 = re.search(r'(?<!\d)(\d{26})(?!\d)', re.sub(r'\s+', '', d))
         if digits26:
             acct = digits26.group(1)
             pref = "PL" + acct
@@ -101,11 +100,11 @@ def enrich_desc_for_86(desc):
                 d = pref + " " + d
 
     ref_patterns = [
-        r'(Nr ref\\s*[:\\.]?\\s*[A-Z0-9/\\-\\._]+)',
-        r'(F/\\d+[^\\s]*)',
-        r'(FAKTUR[AY]\\s*[A-Z0-9/\\-\\._]*)',
-        r'(SACC\\s*\\d+)',
-        r'(Faktura\\s*[:\\s]*[A-Z0-9/\\-\\._]+)'
+        r'(Nr ref\s*[:\.]?\s*[A-Z0-9/\-\.]+)',
+        r'(F/\d+[^\s]*)',
+        r'(FAKTUR[AY]\s*[A-Z0-9/\-\.]*)',
+        r'(SACC\s*\d+)',
+        r'(Faktura\s*[:\s]*[A-Z0-9/\-\.]+)'
     ]
     refs = []
     for p in ref_patterns:
@@ -117,7 +116,7 @@ def enrich_desc_for_86(desc):
             if r.upper() not in d.upper():
                 d = (d + " " + r).strip()
 
-    caps = re.findall(r'\\b[A-ZĄĆĘŁŃÓŚŹŻ]{3,}(?:\\s+[A-ZĄĆĘŁŃÓŚŹŻ0-9\\.\\,\\-]{2,}){0,6}', d)
+    caps = re.findall(r'\b[A-ZĄĆĘŁŃÓŚŹŻ]{3,}(?:\s+[A-ZĄĆĘŁŃÓŚŹŻ0-9\.\,\-]{2,}){0,6}', d)
     if caps:
         for c in caps:
             if not re.search(r'PRZELEW|FAKTURA|SACC|NR|NUMER|IBAN|PL', c, re.IGNORECASE):
@@ -125,9 +124,103 @@ def enrich_desc_for_86(desc):
                     d = (d + " " + c.strip()).strip()
                     break
 
-    d = re.sub(r'Kwota VAT\\s*[:=]', 'VAT:', d, flags=re.IGNORECASE)
-    d = re.sub(r'\\s+', ' ', d).strip()
+    d = re.sub(r'Kwota VAT\s*[:=]', 'VAT:', d, flags=re.IGNORECASE)
+    d = re.sub(r'\s+', ' ', d).strip()
     return d
+def detect_bank(text):
+    if not text:
+        return None
+    lowered = text.lower()
+    if "pekao" in lowered or "saldo początkowe" in lowered or "data operacji" in lowered:
+        return "pekao"
+    if "santander" in lowered or "saldo początkowe" in lowered or "data transakcji" in lowered:
+        return "santander"
+    if ":20:" in text and ":25:" in text and ":61:" in text:
+        return "mt940"
+    return None
+
+def extract_statement_dates(text, transactions):
+    dates = re.findall(r'\d{4}-\d{2}-\d{2}', text)
+    if dates:
+        return dates[0][2:], dates[-1][2:]
+    if transactions:
+        return transactions[0][0], transactions[-1][0]
+    return "000000", "000000"
+
+def extract_statement_number(text):
+    m = re.search(r'Numer wyciągu\s*[:\-]?\s*(\d+)', text, re.IGNORECASE)
+    return m.group(1).strip() if m else None
+
+def extract_statement_month(transactions):
+    if not transactions:
+        return "Nieznany"
+    try:
+        dt = datetime.strptime(transactions[0][0], "%y%m%d")
+        return dt.strftime("%B %Y")
+    except:
+        return "Nieznany"
+
+def deduplicate_transactions(transactions):
+    seen = set()
+    deduped = []
+    for t in transactions:
+        key = (t[0], t[1], t[2][:50])
+        if key not in seen:
+            seen.add(key)
+            deduped.append(t)
+    return deduped
+
+def pekao_parser(text):
+    lines = text.splitlines()
+    account = ""
+    saldo_pocz = "0,00"
+    saldo_konc = "0,00"
+    transactions = []
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        acc_m = re.search(r'Numer rachunku\s*[:\-]?\s*(PL\d{26})', line)
+        if acc_m:
+            account = acc_m.group(1).strip()
+        saldo_m = re.search(r'Saldo początkowe\s*[:\-]?\s*(-?\d[\d\s,]*)', line)
+        if saldo_m:
+            saldo_pocz = clean_amount(saldo_m.group(1))
+        saldo2_m = re.search(r'Saldo końcowe\s*[:\-]?\s*(-?\d[\d\s,]*)', line)
+        if saldo2_m:
+            saldo_konc = clean_amount(saldo2_m.group(1))
+
+    txn_blocks = re.split(r'Data operacji\s*[:\-]?', text)
+    for block in txn_blocks[1:]:
+        m = re.search(r'(\d{2}\.\d{2}\.\d{4})', block)
+        if not m:
+            continue
+        dt_raw = m.group(1)
+        try:
+            dt = datetime.strptime(dt_raw, "%d.%m.%Y").strftime("%y%m%d")
+        except:
+            continue
+        kwota_m = re.search(r'Kwota\s*[:\-]?\s*(-?\d[\d\s,]*)', block)
+        if not kwota_m:
+            continue
+        amt = clean_amount(kwota_m.group(1))
+        desc_m = re.search(r'Opis operacji\s*[:\-]?\s*(.+)', block, re.DOTALL)
+        desc = desc_m.group(1).strip() if desc_m else ""
+        transactions.append((dt, amt, desc))
+
+    transactions.sort(key=lambda x: x[0])
+    deduped = deduplicate_transactions(transactions)
+    return account, saldo_pocz, saldo_konc, deduped
+
+def santander_parser(text):
+    # Placeholder — implementacja analogiczna do pekaoparser
+    return "", "0,00", "0,00", []
+
+BANK_PARSERS = {
+    "pekao": pekao_parser,
+    "santander": santander_parser
+}
 def build_mt940(account_number, saldo_pocz, saldo_konc, transactions):
     today = datetime.today().strftime("%y%m%d")
     start_date = transactions[0][0] if transactions else today
@@ -216,12 +309,10 @@ def build_mt940(account_number, saldo_pocz, saldo_konc, transactions):
     lines.append("-")
     return "\n".join(lines) + "\n"
 
-
 def save_mt940_file(mt940_text, output_path):
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     with open(output_path, "w", encoding="windows-1250", newline="\r\n") as f:
         f.write(mt940_text)
-
 
 def sanity_check(saldo_pocz, saldo_konc, transactions):
     def to_float(s): return float(s.replace(' ', '').replace(',', '.'))
@@ -240,8 +331,6 @@ def sanity_check(saldo_pocz, saldo_konc, transactions):
     if abs((s_p + total) - s_k) > 0.02:
         return False, f"Rozbieżność sald: pocz {s_p} + suma {total} != konc {s_k}"
     return True, "OK"
-
-
 def convert(pdf_path, output_path):
     text = parse_pdf_text(pdf_path)
 
@@ -282,8 +371,6 @@ def convert(pdf_path, output_path):
 
     mt940_text = build_mt940(account, saldo_pocz, saldo_konc, transactions)
     save_mt940_file(mt940_text, output_path)
-
-
 if __name__ == "__main__":
     if len(sys.argv) != 3:
         print("Użycie: python converter_web.py input.pdf output.mt940")
