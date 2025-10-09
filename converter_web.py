@@ -184,34 +184,36 @@ def pekao_parser(text):
         acc_m = re.search(r'Numer rachunku\s*[:\-]?\s*(PL\d{26})', line)
         if acc_m:
             account = acc_m.group(1).strip()
-        saldo_m = re.search(r'Saldo początkowe\s*[:\-]?\s*(-?\d[\d\s,]*)', line)
+        saldo_m = re.search(r'SALDO POCZĄTKOWE\s*[:\-]?\s*(-?\d[\d\s,]*)', line, re.IGNORECASE)
         if saldo_m:
             saldo_pocz = clean_amount(saldo_m.group(1))
-        saldo2_m = re.search(r'Saldo końcowe\s*[:\-]?\s*(-?\d[\d\s,]*)', line)
+        saldo2_m = re.search(r'SALDO KOŃCOWE\s*[:\-]?\s*(-?\d[\d\s,]*)', line, re.IGNORECASE)
         if saldo2_m:
             saldo_konc = clean_amount(saldo2_m.group(1))
 
-    txn_blocks = re.split(r'Data operacji\s*[:\-]?', text)
+    txn_blocks = re.split(r'(?=\d{2}/\d{2}/\d{4})', text)
     for block in txn_blocks[1:]:
-        m = re.search(r'(\d{2}\.\d{2}\.\d{4})', block)
+        m = re.search(r'(\d{2}/\d{2}/\d{4})', block)
         if not m:
             continue
-        dt_raw = m.group(1)
         try:
-            dt = datetime.strptime(dt_raw, "%d.%m.%Y").strftime("%y%m%d")
+            dt = datetime.strptime(m.group(1), "%d/%m/%Y").strftime("%y%m%d")
         except:
             continue
-        kwota_m = re.search(r'Kwota\s*[:\-]?\s*(-?\d[\d\s,]*)', block)
+        kwota_m = re.search(r'Kwota\s*[:\-]?\s*(-?\d[\d\s,\.]*)', block)
+        if not kwota_m:
+            kwota_m = re.search(r'(\-?\d[\d\s,\.]+)', block)
         if not kwota_m:
             continue
         amt = clean_amount(kwota_m.group(1))
-        desc_m = re.search(r'Opis operacji\s*[:\-]?\s*(.+)', block, re.DOTALL)
-        desc = desc_m.group(1).strip() if desc_m else ""
-        transactions.append((dt, amt, desc))
+        desc_lines = block.splitlines()[1:]
+        desc = " ".join(_strip_page_noise(l) for l in desc_lines if l.strip())
+        transactions.append((dt, amt, desc.strip()))
 
     transactions.sort(key=lambda x: x[0])
     deduped = deduplicate_transactions(transactions)
     return account, saldo_pocz, saldo_konc, deduped
+
 
 def santander_parser(text):
     # Placeholder — implementacja analogiczna do pekaoparser
