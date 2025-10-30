@@ -9,6 +9,14 @@ const cors       = require('cors');
 const app  = express();
 const port = process.env.PORT || 3000;
 
+// PO TEJ LINII PRZECHODZĄ WSZYSTKIE ORIGINS!
+app.use(cors({
+  origin: ['http://finconvert.cba.pl'],
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
+
 app.use(cors());
 
 const uploadFolder = path.join(__dirname, 'uploads');
