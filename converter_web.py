@@ -35,16 +35,14 @@ def format_account_for_25(acc_raw):
     if not acc.startswith('/'): return f"/{acc}"
     return acc
 
-def _strip_page_noise(s):
-    return re.sub(r'(Strona\s*\d+/\d+|Wyszczególnienie.*|Data waluty|Kwota|Opis operacji)','',s,flags=re.IGNORECASE).strip()
-
 def enrich_desc_for_86(desc):
     if not desc: return ""
-    d = _strip_page_noise(desc)
+    d = desc
     iban = re.search(r'(PL\d{26})', d)
     if iban and not d.startswith(iban.group(1)):
         d = iban.group(1)+" "+d
     d = re.sub(r'Kwota VAT\s*[:=]', 'VAT:', d, flags=re.IGNORECASE)
+    d = remove_diacritics(d)
     return re.sub(r'\s+',' ',d).strip()
 
 def split_description(desc, first_len=200, next_len=65):
@@ -56,12 +54,6 @@ def split_description(desc, first_len=200, next_len=65):
         d=d[len(segs[-1]):]
     return segs
 
-def detect_bank(text):
-    if "pekao" in text.lower(): return "pekao"
-    if "santander" in text.lower(): return "santander"
-    if ":20:" in text and ":25:" in text: return "mt940"
-    return None
-
 def deduplicate_transactions(transactions):
     seen=set(); out=[]
     for t in transactions:
@@ -72,42 +64,38 @@ def deduplicate_transactions(transactions):
 
 def pekao_parser(text):
     account=""; saldo_pocz="0,00"; saldo_konc="0,00"; transactions=[]
-    for line in text.splitlines():
-        acc=re.search(r'Numer rachunku\s*[:\-]?\s*(PL\d{26})', line)
-        if acc: account=acc.group(1)
-        sp=re.search(r'SALDO POCZĄTKOWE\s*[:\-]?\s*(-?\d[\d\s,]*)', line, re.I)
-        if sp: saldo_pocz=clean_amount(sp.group(1))
-        sk=re.search(r'SALDO KOŃCOWE\s*[:\-]?\s*(-?\d[\d\s,]*)', line, re.I)
-        if sk: saldo_konc=clean_amount(sk.group(1))
-
-    # transakcje: każda linia zaczynająca się od dd/mm/yyyy
     lines=text.splitlines()
+    for line in lines:
+        acc=re.search(r'(PL\d{2}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4})', line)
+        if acc: account=re.sub(r'\s+','',acc.group(1))
+        sp=re.search(r'SALDO POCZĄTKOWE\s*:?[\s-]*(\-?\d[\d\s,]*)', line, re.I)
+        if sp: saldo_pocz=clean_amount(sp.group(1))
+        sk=re.search(r'SALDO KOŃCOWE\s*:?[\s-]*(\-?\d[\d\s,]*)', line, re.I)
+        if sk: saldo_konc=clean_amount(sk.group(1))
+    # transakcje: każda linia z datą transakcji
     i=0
     while i<len(lines):
         m=re.match(r'(\d{2}/\d{2}/\d{4})', lines[i].strip())
         if m:
             dt=datetime.strptime(m.group(1),"%d/%m/%Y").strftime("%y%m%d")
-            parts=lines[i].split()
             amt=None
-            for p in parts[1:]:
-                if re.match(r'-?\d+[\.,]\d{2}', p.replace(' ','')):
-                    amt=clean_amount(p); break
-            desc=" ".join(parts[2:]) if len(parts)>2 else ""
+            amt_match=re.match(r'\d{2}/\d{2}/\d{4}\s*(-?\d[\d.,]*)', lines[i])
+            if amt_match:
+                amt=clean_amount(amt_match.group(1))
+            desc_lines = []
+            # Opis może być na kilku liniach
             j=i+1
             while j<len(lines) and not re.match(r'\d{2}/\d{2}/\d{4}', lines[j].strip()):
-                desc+=" "+lines[j].strip(); j+=1
+                desc_lines.append(lines[j].strip())
+                j+=1
+            desc=" ".join(desc_lines)
+            desc=desc if desc else lines[i]
             transactions.append((dt, amt or "0,00", desc.strip()))
             i=j
         else:
             i+=1
-
     transactions.sort(key=lambda x:x[0])
     return account, saldo_pocz, saldo_konc, deduplicate_transactions(transactions)
-
-def santander_parser(text):
-    return "", "0,00", "0,00", []
-
-BANK_PARSERS={"pekao":pekao_parser,"santander":santander_parser}
 
 def build_mt940(account, saldo_pocz, saldo_konc, transactions):
     today=datetime.today().strftime("%y%m%d")
@@ -138,30 +126,19 @@ def save_mt940_file(mt940_text, output_path):
 
 def convert(pdf_path, output_path):
     text=parse_pdf_text(pdf_path)
-    bank=detect_bank(text)
-    print(f"🔍 Wykryty bank: {bank}")
-    if bank=="mt940":
-        save_mt940_file(text, output_path); return
-    if bank not in BANK_PARSERS: raise ValueError("Brak parsera")
-    account,sp,sk,tx= BANK_PARSERS[bank](text)
+    print("=== WYPIS EKSTRAKTU Z PDF ===")
+    print(text)
+    account,sp,sk,tx= pekao_parser(text)
     print(f"📄 Transakcji: {len(tx)}")
     mt940=build_mt940(account,sp,sk,tx)
     save_mt940_file(mt940, output_path)
-
-if __name__=="__main__":
-    if len(sys.argv)!=3:
-        print("Użycie: python converter_web.py input.pdf output.mt940"); sys.exit(1)
-    try:
-        convert(sys.argv
 
 if __name__ == "__main__":
     if len(sys.argv) != 3:
         print("Użycie: python converter_web.py input.pdf output.mt940")
         sys.exit(1)
-
     input_pdf = sys.argv[1]
     output_mt940 = sys.argv[2]
-
     try:
         convert(input_pdf, output_mt940)
         print("✅ Konwersja zakończona!")
