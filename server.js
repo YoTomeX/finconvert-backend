@@ -11,7 +11,6 @@ const port = process.env.PORT || 3000;
 
 app.use(cors());
 
-// foldery upload/output
 const uploadFolder = path.join(__dirname, 'uploads');
 const outputFolder = path.join(__dirname, 'outputs');
 if (!fs.existsSync(uploadFolder)) fs.mkdirSync(uploadFolder);
@@ -22,7 +21,6 @@ const monthNamesPL = [
   'Lipiec','Sierpień','Wrzesień','Październik','Listopad','Grudzień'
 ];
 
-// sanitizacja nazw plików
 function sanitizeFilename(name) {
   return name
     .normalize('NFD')
@@ -31,7 +29,6 @@ function sanitizeFilename(name) {
     .replace(/[^a-zA-Z0-9_\-\.]/g, '');
 }
 
-// generowanie unikalnej nazwy .mt940
 function formatOutputFilename(originalName) {
   const baseName  = path.basename(originalName, path.extname(originalName));
   const sanitized = sanitizeFilename(baseName);
@@ -39,7 +36,6 @@ function formatOutputFilename(originalName) {
   return `${sanitized}_${timestamp}.mt940`;
 }
 
-// Multer
 const storage = multer.diskStorage({
   destination: (req,file,cb) => cb(null, uploadFolder),
   filename:    (req,file,cb) => cb(null, sanitizeFilename(file.originalname))
@@ -54,7 +50,6 @@ const upload = multer({
   }
 });
 
-// endpoint /convert
 app.post('/convert', upload.single('file'), (req, res) => {
   if (!req.file) {
     return res.status(400).json({ success:false, message:'Nie przesłano pliku PDF.' });
@@ -69,7 +64,6 @@ app.post('/convert', upload.single('file'), (req, res) => {
   let stdoutData = '';
   let stderrData = '';
 
-  // timeout 60s
   const timeout = setTimeout(() => {
     python.kill('SIGKILL');
     return res.status(500).json({
@@ -91,16 +85,18 @@ app.post('/convert', upload.single('file'), (req, res) => {
   python.on('close', code => {
     clearTimeout(timeout);
 
-    // ------------ LICZENIE TRANSAKCJI Z PLIKU ------------
+    // ---- LICZENIE TRANSAKCJI Z PLIKU .mt940 ----
     let numberOfTransactions = 0;
     try {
       const mt940Contents = fs.readFileSync(outputPath, 'utf-8');
-      numberOfTransactions = (mt940Contents.match(/:61:/g) || []).length;
+      numberOfTransactions = (mt940Contents.match(/^[ \t]*:61:/gm) || []).length;
+      console.log(`LICZBA TRANSAKCJI : ${numberOfTransactions}`);
     } catch (e) {
-      numberOfTransactions = (stdoutData.match(/:61:/g) || []).length;
+      console.error('Nie mogę odczytać pliku lub nie znalazłem fraz :61:.', e);
+      numberOfTransactions = 0;
     }
 
-    // ------------ WYKRYWANIE MIESIĄCA -------------
+    // ---- WYKRYWANIE MIESIĄCA ----
     let statementMonth = 'Nieznany';
     const monthPatterns = [
       /📅\s*Miesiąc wyciągu:\s*([^\n\r]+)/,
@@ -127,7 +123,6 @@ app.post('/convert', upload.single('file'), (req, res) => {
         break;
       }
     }
-    // fallback z nazwy pliku YYYYMM*
     if (statementMonth === 'Nieznany') {
       const base = path.basename(req.file.filename, path.extname(req.file.filename));
       const d    = base.match(/^(\d{4})(\d{2})/);
@@ -140,7 +135,7 @@ app.post('/convert', upload.single('file'), (req, res) => {
       }
     }
 
-    // ------------ WYKRYWANIE BANKU --------------
+    // ---- WYKRYWANIE BANKU ----
     let statementBank = 'Nieznany';
     if (/PKOPPLPW|Pekao|Bank Polska Kasa Opieki/i.test(stdoutData)) {
       statementBank = 'Pekao';
@@ -149,7 +144,6 @@ app.post('/convert', upload.single('file'), (req, res) => {
     } else if (/mBank/i.test(stdoutData)) {
       statementBank = 'mBank';
     }
-    // fallback: drugi token po "_" w sanitized filename
     if (statementBank === 'Nieznany') {
       const tokens = sanitizeFilename(req.file.filename).split('_');
       if (tokens.length >= 2) {
@@ -157,19 +151,16 @@ app.post('/convert', upload.single('file'), (req, res) => {
         statementBank = cand.charAt(0).toUpperCase() + cand.slice(1).toLowerCase();
       }
     }
-    // Walidacja
     if (!statementMonth || statementMonth.length < 3) statementMonth = 'Nieznany';
     if (!statementBank || statementBank.length < 2) statementBank = 'Nieznany';
 
     console.log(`🕓 Miesiąc: ${statementMonth}, 🏦 Bank: ${statementBank}, 💸 Liczba transakcji: ${numberOfTransactions}`);
 
-    // log w pliku
     fs.appendFileSync('conversion.log',
       `${new Date().toISOString()} - ${req.file.filename} → ${outputFilename}` +
       ` (miesiąc: ${statementMonth}, bank: ${statementBank}, liczba transakcji: ${numberOfTransactions})\n`
     );
 
-    // ------------ ODPOWIEDŹ JSON ---------------
     if (code === 0) {
       return res.json({
         success:       true,
