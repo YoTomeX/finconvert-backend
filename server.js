@@ -9,15 +9,12 @@ const cors       = require('cors');
 const app  = express();
 const port = process.env.PORT || 3000;
 
-// PO TEJ LINII PRZECHODZĄ WSZYSTKIE ORIGINS!
+// Konfiguracja CORS - tylko jedna, solidna linia middleware!
 app.use(cors({
-  origin: ['http://finconvert.cba.pl'],
+  origin: 'http://finconvert.cba.pl', // możesz tutaj istotnie podać dokładną domenę frontendu
   methods: ['GET', 'POST', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
-
-
-app.use(cors());
 
 const uploadFolder = path.join(__dirname, 'uploads');
 const outputFolder = path.join(__dirname, 'outputs');
@@ -93,7 +90,6 @@ app.post('/convert', upload.single('file'), (req, res) => {
   python.on('close', code => {
     clearTimeout(timeout);
 
-    // ---- LICZENIE TRANSAKCJI Z PLIKU .mt940 ----
     let numberOfTransactions = 0;
     try {
       const mt940Contents = fs.readFileSync(outputPath, 'utf-8');
@@ -104,7 +100,6 @@ app.post('/convert', upload.single('file'), (req, res) => {
       numberOfTransactions = 0;
     }
 
-    // ---- WYKRYWANIE MIESIĄCA ----
     let statementMonth = 'Nieznany';
     const monthPatterns = [
       /📅\s*Miesiąc wyciągu:\s*([^\n\r]+)/,
@@ -143,7 +138,6 @@ app.post('/convert', upload.single('file'), (req, res) => {
       }
     }
 
-    // ---- WYKRYWANIE BANKU ----
     let statementBank = 'Nieznany';
     if (/PKOPPLPW|Pekao|Bank Polska Kasa Opieki/i.test(stdoutData)) {
       statementBank = 'Pekao';
@@ -169,6 +163,17 @@ app.post('/convert', upload.single('file'), (req, res) => {
       ` (miesiąc: ${statementMonth}, bank: ${statementBank}, liczba transakcji: ${numberOfTransactions})\n`
     );
 
+    // Loguj odpowiedź JSON przed zwróceniem
+    console.log('ODPOWIEDŹ JSON:', {
+      success:       true,
+      message:       'Konwersja zakończona sukcesem.',
+      output:        stdoutData,
+      downloadUrl:   `https://finconvert-backend-1.onrender.com/outputs/${outputFilename}`,
+      statementMonth,
+      statementBank,
+      numberOfTransactions
+    });
+
     if (code === 0) {
       return res.json({
         success:       true,
@@ -189,7 +194,6 @@ app.post('/convert', upload.single('file'), (req, res) => {
   });
 });
 
-// serwowanie statyczne + start
 app.use(express.static(path.join(__dirname, 'public')));
 app.use('/outputs', express.static(outputFolder));
 
