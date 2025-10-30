@@ -7,7 +7,7 @@ const fs         = require('fs');
 const cors       = require('cors');
 
 const app  = express();
-const port = process.env.PORT || 3000;
+const port = process.env.PORT || 3000; // POPRAWKA!
 
 app.use(cors());
 
@@ -17,7 +17,6 @@ const outputFolder = path.join(__dirname, 'outputs');
 if (!fs.existsSync(uploadFolder)) fs.mkdirSync(uploadFolder);
 if (!fs.existsSync(outputFolder)) fs.mkdirSync(outputFolder);
 
-// polskie nazwy miesięcy z wielkiej litery
 const monthNamesPL = [
   'Styczeń','Luty','Marzec','Kwiecień','Maj','Czerwiec',
   'Lipiec','Sierpień','Wrzesień','Październik','Listopad','Grudzień'
@@ -92,40 +91,36 @@ app.post('/convert', upload.single('file'), (req, res) => {
   python.on('close', code => {
     clearTimeout(timeout);
 
-    // -------------------
-    // 1) WYKRYWANIE MIESIĄCA
-    // -------------------
-   let statementMonth = 'Nieznany';
+    // ------------ LICZENIE TRANSAKCJI ------------
+    const numberOfTransactions = (stdoutData.match(/:61:/g) || []).length;
 
-const monthPatterns = [
-  /📅\s*Miesiąc wyciągu:\s*([^\n\r]+)/,
-  /Miesiąc:\s*([^\n\r]+)/,
-  /(\d{2})\.(\d{2})\.(\d{4})/,
-  /(\d{4})-(\d{2})-(\d{2})/,
-  /(\d{2})\/(\d{4})/,
-  /Za okres od \d{2}\/(\d{2})\/(\d{4})/  // 👈 NOWY
-];
-
-for (const rx of monthPatterns) {
-  const m = stdoutData.match(rx);
-  if (m) {
-    if (rx === monthPatterns[0] || rx === monthPatterns[1]) {
-      statementMonth = m[1].trim();
-    } else if (rx === monthPatterns[2]) {
-      statementMonth = `${monthNamesPL[parseInt(m[2],10)-1]} ${m[3]}`;
-    } else if (rx === monthPatterns[3]) {
-      statementMonth = `${monthNamesPL[parseInt(m[2],10)-1]} ${m[1]}`;
-    } else if (rx === monthPatterns[4]) {
-      statementMonth = `${monthNamesPL[parseInt(m[1],10)-1]} ${m[2]}`;
-    } else if (rx === monthPatterns[5]) {
-      statementMonth = `${monthNamesPL[parseInt(m[1],10)-1]} ${m[2]}`;
+    // ------------ WYKRYWANIE MIESIĄCA -------------
+    let statementMonth = 'Nieznany';
+    const monthPatterns = [
+      /📅\s*Miesiąc wyciągu:\s*([^\n\r]+)/,
+      /Miesiąc:\s*([^\n\r]+)/,
+      /(\d{2})\.(\d{2})\.(\d{4})/,
+      /(\d{4})-(\d{2})-(\d{2})/,
+      /(\d{2})\/(\d{4})/,
+      /Za okres od \d{2}\/(\d{2})\/(\d{4})/
+    ];
+    for (const rx of monthPatterns) {
+      const m = stdoutData.match(rx);
+      if (m) {
+        if (rx === monthPatterns[0] || rx === monthPatterns[1]) {
+          statementMonth = m[1].trim();
+        } else if (rx === monthPatterns[2]) {
+          statementMonth = `${monthNamesPL[parseInt(m[2],10)-1]} ${m[3]}`;
+        } else if (rx === monthPatterns[3]) {
+          statementMonth = `${monthNamesPL[parseInt(m[2],10)-1]} ${m[1]}`;
+        } else if (rx === monthPatterns[4]) {
+          statementMonth = `${monthNamesPL[parseInt(m[1],10)-1]} ${m[2]}`;
+        } else if (rx === monthPatterns[5]) {
+          statementMonth = `${monthNamesPL[parseInt(m[1],10)-1]} ${m[2]}`;
+        }
+        break;
+      }
     }
-    break;
-  }
-}
-
-
-
     // fallback z nazwy pliku YYYYMM*
     if (statementMonth === 'Nieznany') {
       const base = path.basename(req.file.filename, path.extname(req.file.filename));
@@ -138,16 +133,16 @@ for (const rx of monthPatterns) {
         }
       }
     }
-    // -------------------
-    // 2) WYKRYWANIE BANKU
-    // -------------------
-   let statementBank = 'Nieznany';
-const bankMatch = stdoutData.match(/Wykryty bank:\s*([^\n\r]+)/);
-if (bankMatch && bankMatch[1]) {
-  const raw = bankMatch[1].trim();
-  statementBank = raw.charAt(0).toUpperCase() + raw.slice(1).toLowerCase();
-}
 
+    // ------------ WYKRYWANIE BANKU --------------
+    let statementBank = 'Nieznany';
+    if (/PKOPPLPW|Pekao|Bank Polska Kasa Opieki/i.test(stdoutData)) {
+      statementBank = 'Pekao';
+    } else if (/Santander/i.test(stdoutData)) {
+      statementBank = 'Santander';
+    } else if (/mBank/i.test(stdoutData)) {
+      statementBank = 'mBank';
+    }
     // fallback: drugi token po "_" w sanitized filename
     if (statementBank === 'Nieznany') {
       const tokens = sanitizeFilename(req.file.filename).split('_');
@@ -156,21 +151,19 @@ if (bankMatch && bankMatch[1]) {
         statementBank = cand.charAt(0).toUpperCase() + cand.slice(1).toLowerCase();
       }
     }
-	// Walidacja banku i miesiąca przed wysłaniem JSON-a
-	if (!statementMonth || statementMonth.length < 3) statementMonth = 'Nieznany';
-	if (!statementBank || statementBank.length < 2) statementBank = 'Nieznany';
+    // Walidacja
+    if (!statementMonth || statementMonth.length < 3) statementMonth = 'Nieznany';
+    if (!statementBank || statementBank.length < 2) statementBank = 'Nieznany';
 
-    console.log(`🕓 Miesiąc: ${statementMonth}, 🏦 Bank: ${statementBank}`);
+    console.log(`🕓 Miesiąc: ${statementMonth}, 🏦 Bank: ${statementBank}, 💸 Liczba transakcji: ${numberOfTransactions}`);
 
     // log w pliku
     fs.appendFileSync('conversion.log',
       `${new Date().toISOString()} - ${req.file.filename} → ${outputFilename}` +
-      ` (miesiąc: ${statementMonth}, bank: ${statementBank})\n`
+      ` (miesiąc: ${statementMonth}, bank: ${statementBank}, liczba transakcji: ${numberOfTransactions})\n`
     );
 
-    // -------------------
-    // 3) ODPOWIEDŹ JSON
-    // -------------------
+    // ------------ ODPOWIEDŹ JSON ---------------
     if (code === 0) {
       return res.json({
         success:       true,
@@ -178,7 +171,8 @@ if (bankMatch && bankMatch[1]) {
         output:        stdoutData,
         downloadUrl:   `https://finconvert-backend-1.onrender.com/outputs/${outputFilename}`,
         statementMonth,
-        statementBank
+        statementBank,
+        numberOfTransactions
       });
     } else {
       return res.status(500).json({
