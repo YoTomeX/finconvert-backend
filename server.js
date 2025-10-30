@@ -7,7 +7,7 @@ const fs         = require('fs');
 const cors       = require('cors');
 
 const app  = express();
-const port = process.env.PORT || 3000; // POPRAWKA!
+const port = process.env.PORT || 3000;
 
 app.use(cors());
 
@@ -91,8 +91,14 @@ app.post('/convert', upload.single('file'), (req, res) => {
   python.on('close', code => {
     clearTimeout(timeout);
 
-    // ------------ LICZENIE TRANSAKCJI ------------
-    const numberOfTransactions = (stdoutData.match(/:61:/g) || []).length;
+    // ------------ LICZENIE TRANSAKCJI Z PLIKU ------------
+    let numberOfTransactions = 0;
+    try {
+      const mt940Contents = fs.readFileSync(outputPath, 'utf-8');
+      numberOfTransactions = (mt940Contents.match(/:61:/g) || []).length;
+    } catch (e) {
+      numberOfTransactions = (stdoutData.match(/:61:/g) || []).length;
+    }
 
     // ------------ WYKRYWANIE MIESIĄCA -------------
     let statementMonth = 'Nieznany';
