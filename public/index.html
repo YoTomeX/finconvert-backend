@@ -1,101 +1,247 @@
 <!DOCTYPE html>
 <html lang="pl">
 <head>
-  <meta charset="UTF-8">
-  <title>FinConvert lokalnie</title>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FinConvert MT940</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700&family=Montserrat:wght@700&display=swap" rel="stylesheet">
   <style>
     body {
-      font-family: Arial, sans-serif;
-      margin: 40px;
-      background-color: #f9f9f9;
+      margin: 0;
+      font-family: 'Inter', sans-serif;
+      background-color: #ffffff;
+      color: #1E2A38;
     }
-    h2 {
-      color: #333;
+    header {
+      background-color: #00BFA6;
+      color: white;
+      padding: 2rem;
+      text-align: center;
+    }
+    header h1 {
+      font-family: 'Montserrat', sans-serif;
+      font-size: 2.5rem;
+      margin: 0;
+    }
+    header p {
+      font-size: 1.2rem;
+      margin-top: 0.5rem;
+    }
+    .cta-button {
+      background-color: #1E2A38;
+      color: white;
+      padding: 0.8rem 1.5rem;
+      border: none;
+      border-radius: 5px;
+      font-size: 1rem;
+      margin-top: 1rem;
+      cursor: pointer;
+      text-decoration: none;
+      display: inline-block;
+    }
+    section {
+      padding: 2rem;
+      max-width: 800px;
+      margin: auto;
+    }
+    section h2 {
+      font-family: 'Montserrat', sans-serif;
+      font-size: 1.8rem;
+      margin-bottom: 1rem;
+    }
+    ul, ol {
+      padding-left: 1.5rem;
+    }
+    footer {
+      background-color: #1E2A38;
+      color: white;
+      text-align: center;
+      padding: 1rem;
+      font-size: 0.9rem;
     }
     form {
-      margin-bottom: 20px;
+      background-color: #f9f9f9;
+      padding: 1.5rem;
+      border-radius: 8px;
+      box-shadow: 0 0 10px rgba(0, 0, 0, 0.05);
     }
-    input[type="file"] {
-      margin-right: 10px;
+    input, textarea {
+      width: 100%;
+      padding: 0.7rem;
+      margin-top: 0.3rem;
+      border: 1px solid #ccc;
+      border-radius: 5px;
+      font-family: 'Inter', sans-serif;
     }
-    button {
-      padding: 6px 12px;
-      background-color: #007bff;
-      color: white;
-      border: none;
+    button.cta-button {
+      margin-top: 1rem;
+    }
+    .upload-box {
+      margin: 30px auto;
+      max-width: 400px;
+      border: 2px dashed #aaa;
+      padding: 40px;
+      background: #fff;
       cursor: pointer;
+      text-align: center;
     }
-    button:hover {
-      background-color: #0056b3;
+    #animation {
+      font-size: 1.2em;
+      color: #555;
+      animation: pulse 2s infinite;
+      display: none;
     }
     #result {
-      margin-top: 20px;
-      padding: 15px;
-      border-radius: 5px;
+      margin-top: 30px;
+      font-size: 1.2em;
+      color: #4caf50;
     }
-    .success {
-      background-color: #e6ffed;
-      border: 1px solid #28a745;
-      color: #155724;
-    }
-    .error {
-      background-color: #ffe6e6;
-      border: 1px solid #dc3545;
-      color: #721c24;
-    }
-    .download-link {
-      display: block;
-      margin-top: 10px;
-      font-weight: bold;
+    @keyframes pulse {
+      0% { opacity: 0.5; }
+      50% { opacity: 1; }
+      100% { opacity: 0.5; }
     }
   </style>
 </head>
 <body>
-  <h2>Prześlij plik PDF do konwersji</h2>
-  <form id="uploadForm" enctype="multipart/form-data">
-    <input type="file" name="pdf" accept=".pdf" required />
-    <button type="submit">Konwertuj</button>
-  </form>
+  <header>
+    <h1>FinConvert MT940</h1>
+    <p>bo księgowość zasługuje na automatyzację</p>
+    <a href="#konwersja" class="cta-button">Wypróbuj za darmo</a>
+  </header>
 
-  <div id="result"></div>
+  <section>
+    <h2>Jak to działa?</h2>
+    <ol>
+      <li>Wgraj plik PDF z wyciągiem bankowym</li>
+      <li>System automatycznie rozpozna bank i dane</li>
+      <li>Pobierz gotowy plik MT940 i zaimportuj do swojego systemu księgowego</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Dla kogo?</h2>
+    <ul>
+      <li>Biura rachunkowe</li>
+      <li>Freelancerzy i mikroprzedsiębiorcy</li>
+      <li>Działy finansowe w firmach</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Cennik</h2>
+    <ul>
+      <li><strong>Wersja desktopowa:</strong> 199 PLN netto (jednorazowo)</li>
+      <li><strong>Wersja online (SaaS):</strong> 25 PLN/miesiąc lub 250 PLN/rok</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>FAQ</h2>
+    <ul>
+      <li>✅ Czy dane są bezpieczne? Tak, przetwarzanie lokalne</li>
+      <li>✅ Czy działa z Symfonią? Tak, pełna zgodność z MT940</li>
+      <li>✅ Jakie banki są obsługiwane? Santander, Pekao, mBank (więcej wkrótce)</li>
+    </ul>
+  </section>
+
+  <section id="kontakt">
+    <h2>Skontaktuj się z nami</h2>
+    <form action="https://formspree.io/f/mrblwarw" method="POST">
+      <label for="name">Imię i nazwisko</label><br>
+      <input type="text" id="name" name="name" required><br><br>
+      <input type="text" name="_gotcha" style="display:none">
+      <label for="email">Adres e-mail</label><br>
+      <input type="email" id="email" name="_replyto" required><br><br>
+      <label for="message">Wiadomość</label><br>
+      <textarea id="message" name="message" rows="5" required></textarea><br><br>
+      <button type="submit" class="cta-button">Wyślij wiadomość</button>
+    </form>
+  </section>
+
+  <section id="konwersja">
+    <h2>Konwersja PDF → MT940</h2>
+    <p>Wrzuć plik PDF i zobacz, jak FinConvert go przekształca</p>
+
+    <div class="upload-box">
+      📄 Kliknij, aby wrzucić plik PDF
+    </div>
+
+    <input type="file" id="pdfInput" accept="application/pdf" style="display: none;" />
+    <p id="fileName">Nie wybrano pliku</p>
+
+    <button id="convertBtn" class="cta-button">Konwertuj PDF</button>
+
+    <div id="animation">🔄 Przetwarzanie danych...</div>
+    <div id="result"></div>
+  </section>
+
+  <footer>
+    &copy; 2025 FinConvert. Wszelkie prawa zastrzeżone.
+  </footer>
 
   <script>
-    const form = document.getElementById('uploadForm');
-    const resultDiv = document.getElementById('result');
+    document.addEventListener('DOMContentLoaded', () => {
+      const pdfInput  = document.getElementById('pdfInput');
+      const fileName  = document.getElementById('fileName');
+      const btn       = document.getElementById('convertBtn');
+      const anim      = document.getElementById('animation');
+      const resultDiv = document.getElementById('result');
+      const uploadBox = document.querySelector('.upload-box');
 
-    form.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const formData = new FormData(form);
-      const file = formData.get('pdf');
+      uploadBox.addEventListener('click', () => pdfInput.click());
 
-      if (!file || file.type !== 'application/pdf') {
-        resultDiv.innerHTML = `<div class="error">❌ Tylko pliki PDF są obsługiwane.</div>`;
-        return;
-      }
+      pdfInput.addEventListener('change', () => {
+        fileName.textContent = pdfInput.files[0]?.name || 'Nie wybrano pliku';
+      });
 
-      resultDiv.innerHTML = `<div>⏳ Trwa konwersja...</div>`;
-
-      try {
-        const res = await fetch('/convert', {
-          method: 'POST',
-          body: formData
-        });
-        const data = await res.json();
-
-        if (data.success) {
-          resultDiv.innerHTML = `
-            <div class="success">
-              ✅ ${data.message}
-              <pre>${data.output}</pre>
-              <a class="download-link" href="${data.downloadUrl}" download>Pobierz wynik MT940</a>
-            </div>
-          `;
-        } else {
-          resultDiv.innerHTML = `<div class="error">❌ ${data.message}<pre>${data.error}</pre></div>`;
+      btn.addEventListener('click', async () => {
+        if (!pdfInput.files.length) {
+          return resultDiv.innerHTML = '⚠️ Proszę wybrać plik PDF.';
         }
-      } catch (err) {
-        resultDiv.innerHTML = `<div class="error">❌ Błąd połączenia z serwerem.</div>`;
-      }
+        anim.style.display = 'block';
+        resultDiv.innerHTML = '';
+
+        const fd = new FormData();
+        fd.append('file', pdfInput.files[0]);
+
+        try {
+          const resp = await fetch('https://finconvert-backend-1.onrender.com/convert', {
+            method: 'POST',
+            body: fd
+          });
+          const json = await resp.json();
+          anim.style.display = 'none';
+
+          const text       = json.output || '';
+         # const countMatch = text.match(/📄\s*Liczba transakcji:\s*(\d+)/);
+
+          const bank  = json.statementBank || 'Nieznany';
+		  const month = json.statementMonth || 'Nieznany';
+		  const count = json.numberOfTransactions || 0;
+
+		  let html = `
+		  ✅ Konwersja zakończona!<br>
+		  🔍 Wykryty bank: <strong>${bank}</strong><br>
+		  📅 Miesiąc wyciągu: <strong>${month}</strong><br>
+		  📄 Liczba transakcji: <strong>${count}</strong><br><br>
+		  `;
+
+		if (json.downloadUrl) {
+		  html += `<a href="${json.downloadUrl}" download class="cta-button">📥 Pobierz MT940</a>`;
+		} else {
+		  html += `<span style="color:#d32f2f;">❌ Brak pliku do pobrania.</span>`;
+		}
+
+		resultDiv.innerHTML = html;
+
+
+        } catch (err) {
+          anim.style.display = 'none';
+          resultDiv.innerHTML = `❌ Błąd: <code>${err.message}</code>`;
+          console.error(err);
+        }
+      });
     });
   </script>
 </body>
