@@ -91,8 +91,9 @@ def segment_description(desc):
             segments.append(f"^{prefix}{value}")
             seen.add(key)
 
-    iban = re.search(r'(PL\d{26})', desc)
-    if iban: add_segment("38", iban.group(1))
+    ibans = re.findall(r'(PL\d{26})', desc)
+    for iban in ibans:
+        add_segment("38", iban)
 
     ref = re.search(r'Nr ref[ .:]*([A-Z0-9]+)', desc)
     if ref: add_segment("20", ref.group(1))
@@ -103,7 +104,7 @@ def segment_description(desc):
     name = re.search(r'([A-Z][A-Z\s\.]+)', desc)
     if name: add_segment("32", name.group(1).strip())
 
-    if len(segments) < 2:
+    if not any(s.startswith("^00") for s in segments):
         add_segment("00", desc)
 
     return segments
@@ -181,8 +182,8 @@ def build_mt940(account, saldo_pocz, saldo_konc, transactions, num_20="1", num_2
             amt = pad_amount(a.lstrip('-'))
             code = map_transaction_code(desc)
             lines.append(f":61:{d}{d[2:]}{txn_type}{amt}{code}")
-            for seg in segment_description(desc):
-                lines.append(f":86:{seg}")
+            segments = segment_description(desc)
+            lines.append(f":86:{''.join(segments)}")
         except Exception as e:
             logging.error(f"Błąd w transakcji #{idx+1} ({d}, {a}): {e}")
             lines.append(f":61:{d}{d[2:]}C00000000,00NTRFNONREF")
