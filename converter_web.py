@@ -27,6 +27,11 @@ def clean_amount(amount):
     except: val = 0.0
     return "{:.2f}".format(val).replace('.',',')
 
+def pad_amount(amt, width=11):
+    left, right = amt.split(',')
+    left = left.zfill(width-len(right)-1)
+    return f"{left},{right}"
+
 def format_account_for_25(acc_raw):
     if not acc_raw: return "/PL00000000000000000000000000"
     acc = re.sub(r'\s+','',acc_raw).upper()
@@ -62,8 +67,19 @@ def deduplicate_transactions(transactions):
             seen.add(key); out.append(t)
     return out
 
+def extract_mt940_headers(text):
+    # Spróbuj znaleźć numer :20: oraz :28C: samodzielnie z nagłówka
+    num_20 = '1'
+    num_28C = '00001'
+    m20 = re.search(r':20:(\S+)', text)
+    if m20: num_20 = m20.group(1)
+    m28c = re.search(r':28C:(\d+)', text)
+    if m28c: num_28C = m28c.group(1)
+    return num_20, num_28C
+
 def pekao_parser(text):
     account=""; saldo_pocz="0,00"; saldo_konc="0,00"; transactions=[]
+    num_20, num_28C = extract_mt940_headers(text)
     lines=text.splitlines()
     for line in lines:
         acc=re.search(r'(PL\d{2}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4})', line)
@@ -72,7 +88,6 @@ def pekao_parser(text):
         if sp: saldo_pocz=clean_amount(sp.group(1))
         sk=re.search(r'SALDO KOŃCOWE\s*:?[\s-]*(\-?\d[\d\s,]*)', line, re.I)
         if sk: saldo_konc=clean_amount(sk.group(1))
-    # transakcje: każda linia z datą transakcji
     i=0
     while i<len(lines):
         m=re.match(r'(\d{2}/\d{2}/\d{4})', lines[i].strip())
@@ -83,7 +98,6 @@ def pekao_parser(text):
             if amt_match:
                 amt=clean_amount(amt_match.group(1))
             desc_lines = []
-            # Opis może być na kilku liniach
             j=i+1
             while j<len(lines) and not re.match(r'\d{2}/\d{2}/\d{4}', lines[j].strip()):
                 desc_lines.append(lines[j].strip())
@@ -95,25 +109,26 @@ def pekao_parser(text):
         else:
             i+=1
     transactions.sort(key=lambda x:x[0])
-    return account, saldo_pocz, saldo_konc, deduplicate_transactions(transactions)
+    return account, saldo_pocz, saldo_konc, deduplicate_transactions(transactions), num_20, num_28C
 
-def build_mt940(account, saldo_pocz, saldo_konc, transactions):
-    today=datetime.today().strftime("%y%m%d")
-    start=transactions[0][0] if transactions else today
-    end=transactions[-1][0] if transactions else today
-    acct=format_account_for_25(account)
-    cd60='D' if saldo_pocz.startswith('-') else 'C'
-    cd62='D' if saldo_konc.startswith('-') else 'C'
-    amt60=saldo_pocz.lstrip('-'); amt62=saldo_konc.lstrip('-')
-    lines=[f":20:{datetime.now().strftime('%Y%m%d%H%M%S')}",
-           f":25:{acct}",
-           ":28C:000001",
-           f":60F:{cd60}{start}PLN{amt60}"]
-    for d,a,desc in transactions:
-        txn_type='D' if a.startswith('-') else 'C'
-        amt=a.lstrip('-')
+def build_mt940(account, saldo_pocz, saldo_konc, transactions, num_20="1", num_28C="00001"):
+    today = datetime.today().strftime("%y%m%d")
+    start = transactions[0][0] if transactions else today
+    end = transactions[-1][0] if transactions else today
+    acct = format_account_for_25(account)
+    cd60 = 'D' if saldo_pocz.startswith('-') else 'C'
+    cd62 = 'D' if saldo_konc.startswith('-') else 'C'
+    amt60 = pad_amount(saldo_pocz.lstrip('-'))
+    amt62 = pad_amount(saldo_konc.lstrip('-'))
+    lines = [f":20:{num_20}",
+             f":25:{acct}",
+             f":28C:{num_28C}",
+             f":60F:{cd60}{start}PLN{amt60}"]
+    for d, a, desc in transactions:
+        txn_type = 'D' if a.startswith('-') else 'C'
+        amt = pad_amount(a.lstrip('-'))
         lines.append(f":61:{d}{d[2:]}{txn_type}{amt}NTRFNONREF")
-        enriched=enrich_desc_for_86(desc)
+        enriched = enrich_desc_for_86(desc)
         for seg in split_description(enriched):
             lines.append(f":86:{seg}")
     lines.append(f":62F:{cd62}{end}PLN{amt62}")
@@ -128,9 +143,9 @@ def convert(pdf_path, output_path):
     text=parse_pdf_text(pdf_path)
     print("=== WYPIS EKSTRAKTU Z PDF ===")
     print(text)
-    account,sp,sk,tx= pekao_parser(text)
+    account,sp,sk,tx,num_20,num_28C = pekao_parser(text)
     print(f"📄 Transakcji: {len(tx)}")
-    mt940=build_mt940(account,sp,sk,tx)
+    mt940=build_mt940(account,sp,sk,tx,num_20,num_28C)
     save_mt940_file(mt940, output_path)
 
 if __name__ == "__main__":
