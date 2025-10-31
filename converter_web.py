@@ -68,7 +68,6 @@ def deduplicate_transactions(transactions):
     return out
 
 def extract_mt940_headers(text):
-    # Spróbuj znaleźć numer :20: oraz :28C: samodzielnie z nagłówka
     num_20 = '1'
     num_28C = '00001'
     m20 = re.search(r':20:(\S+)', text)
@@ -111,6 +110,29 @@ def pekao_parser(text):
     transactions.sort(key=lambda x:x[0])
     return account, saldo_pocz, saldo_konc, deduplicate_transactions(transactions), num_20, num_28C
 
+def remove_trailing_86(mt940_text):
+    # Usuwa wszystkie :86: po ostatnim :61:
+    lines = mt940_text.strip().split('\n')
+    last_61_idx = -1
+    for i, line in enumerate(lines):
+        if line.startswith(':61:'):
+            last_61_idx = i
+    # Zezwalamy na pojawienie się :86: tylko do końca opisu ostatniej transakcji
+    end_idx = last_61_idx
+    # Znajdujemy ostatni :86: po ostatnim :61:
+    for i in range(last_61_idx+1, len(lines)):
+        if not lines[i].startswith(':86:'):
+            end_idx = i
+            break
+    # Zachowujemy tylko linie do end_idx oraz saldo końcowe i stopkę
+    # Szukamy :62F: i "-"
+    tail=[]
+    for line in lines[end_idx:]:
+        if line.startswith(':62F:') or line == '-':
+            tail.append(line)
+    clean_text = "\n".join(lines[:end_idx] + tail)
+    return clean_text + ("\n" if not clean_text.endswith('\n') else "")
+
 def build_mt940(account, saldo_pocz, saldo_konc, transactions, num_20="1", num_28C="00001"):
     today = datetime.today().strftime("%y%m%d")
     start = transactions[0][0] if transactions else today
@@ -133,7 +155,9 @@ def build_mt940(account, saldo_pocz, saldo_konc, transactions, num_20="1", num_2
             lines.append(f":86:{seg}")
     lines.append(f":62F:{cd62}{end}PLN{amt62}")
     lines.append("-")
-    return "\n".join(lines)+"\n"
+    mt940 = "\n".join(lines)
+    # Usuwanie nadmiarowych :86: na końcu
+    return remove_trailing_86(mt940)
 
 def save_mt940_file(mt940_text, output_path):
     with open(output_path,"w",encoding="windows-1250",newline="\r\n") as f:
