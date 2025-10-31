@@ -65,11 +65,12 @@ def map_transaction_code(desc):
 
 def segment_description(desc):
     desc = remove_diacritics(desc)
-    
+
     # Ucinanie stopki PDF-a jeśli występuje
     stopka_keywords = [
         "bank polska kasa opieki", "gwarancja bfg", "www.pekao.com.pl",
-        "kapital zakladowy", "sad rejonowy", "nr krs", "nip:"
+        "kapital zakladowy", "sad rejonowy", "nr krs", "nip:",
+        "oprocentowanie", "arkusz informacyjny", "informacja dotyczaca trybu"
     ]
     desc_lower = desc.lower()
     for kw in stopka_keywords:
@@ -77,6 +78,9 @@ def segment_description(desc):
         if pos != -1:
             desc = desc[:pos].strip()
             break
+
+    if len(desc) > 300:
+        desc = desc[:300].strip()
 
     segments = []
     seen = set()
@@ -99,10 +103,10 @@ def segment_description(desc):
     name = re.search(r'([A-Z][A-Z\s\.]+)', desc)
     if name: add_segment("32", name.group(1).strip())
 
-    # Usuń dołączanie całego opisu ^00, aby uniknąć powtórzeń stopek
-    
-    return segments
+    if len(segments) < 2:
+        add_segment("00", desc)
 
+    return segments
 def remove_trailing_86(mt940_text):
     lines = mt940_text.strip().split('\n')
     result = []
@@ -117,45 +121,45 @@ def remove_trailing_86(mt940_text):
     return "\n".join(result) + "\n"
 
 def deduplicate_transactions(transactions):
-    seen=set(); out=[]
+    seen = set(); out = []
     for t in transactions:
-        key=(t[0],t[1],t[2][:50])
+        key = (t[0], t[1], t[2][:50])
         if key not in seen:
             seen.add(key); out.append(t)
     return out
 
 def pekao_parser(text):
-    account=""; saldo_pocz="0,00"; saldo_konc="0,00"; transactions=[]
+    account = ""; saldo_pocz = "0,00"; saldo_konc = "0,00"; transactions = []
     num_20, num_28C = extract_mt940_headers(text)
-    lines=text.splitlines()
+    lines = text.splitlines()
     for line in lines:
-        acc=re.search(r'(PL\d{2}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4})', line)
-        if acc: account=re.sub(r'\s+','',acc.group(1))
-        sp=re.search(r'SALDO POCZĄTKOWE\s*:?[\s-]*(\-?\d[\d\s,]*)', line, re.I)
-        if sp: saldo_pocz=clean_amount(sp.group(1))
-        sk=re.search(r'SALDO KOŃCOWE\s*:?[\s-]*(\-?\d[\d\s,]*)', line, re.I)
-        if sk: saldo_konc=clean_amount(sk.group(1))
-    i=0
-    while i<len(lines):
-        m=re.match(r'(\d{2}/\d{2}/\d{4})', lines[i].strip())
+        acc = re.search(r'(PL\d{2}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4})', line)
+        if acc: account = re.sub(r'\s+', '', acc.group(1))
+        sp = re.search(r'SALDO POCZĄTKOWE\s*:?[\s-]*(\-?\d[\d\s,]*)', line, re.I)
+        if sp: saldo_pocz = clean_amount(sp.group(1))
+        sk = re.search(r'SALDO KOŃCOWE\s*:?[\s-]*(\-?\d[\d\s,]*)', line, re.I)
+        if sk: saldo_konc = clean_amount(sk.group(1))
+    i = 0
+    while i < len(lines):
+        m = re.match(r'(\d{2}/\d{2}/\d{4})', lines[i].strip())
         if m:
-            dt=datetime.strptime(m.group(1),"%d/%m/%Y").strftime("%y%m%d")
-            amt=None
-            amt_match=re.match(r'\d{2}/\d{2}/\d{4}\s*(-?\d[\d.,]*)', lines[i])
+            dt = datetime.strptime(m.group(1), "%d/%m/%Y").strftime("%y%m%d")
+            amt = None
+            amt_match = re.match(r'\d{2}/\d{2}/\d{4}\s*(-?\d[\d.,]*)', lines[i])
             if amt_match:
-                amt=clean_amount(amt_match.group(1))
+                amt = clean_amount(amt_match.group(1))
             desc_lines = []
-            j=i+1
-            while j<len(lines) and not re.match(r'\d{2}/\d{2}/\d{4}', lines[j].strip()):
+            j = i + 1
+            while j < len(lines) and not re.match(r'\d{2}/\d{2}/\d{4}', lines[j].strip()):
                 desc_lines.append(lines[j].strip())
-                j+=1
-            desc=" ".join(desc_lines)
-            desc=desc if desc else lines[i]
+                j += 1
+            desc = " ".join(desc_lines)
+            desc = desc if desc else lines[i]
             transactions.append((dt, amt or "0,00", desc.strip()))
-            i=j
+            i = j
         else:
-            i+=1
-    transactions.sort(key=lambda x:x[0])
+            i += 1
+    transactions.sort(key=lambda x: x[0])
     return account, saldo_pocz, saldo_konc, deduplicate_transactions(transactions), num_20, num_28C
 
 def build_mt940(account, saldo_pocz, saldo_konc, transactions, num_20="1", num_28C="00001"):
