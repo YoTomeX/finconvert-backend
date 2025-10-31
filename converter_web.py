@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
-import sys, os, re, io, traceback, unicodedata, logging
+import sys, os, re, io, traceback, unicodedata
 from datetime import datetime
 import pdfplumber
-
-logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
 try:
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
@@ -174,17 +172,17 @@ def build_mt940(account, saldo_pocz, saldo_konc, transactions, num_20="1", num_2
              f":25:{acct}",
              f":28C:{num_28C}",
              f":60F:{cd60}{start}PLN{amt60}"]
-    for idx, (d, a, desc) in enumerate(transactions):
-        try:
-            txn_type = 'D' if a.startswith('-') else 'C'
-            amt = pad_amount(a.lstrip('-'))
-            code = map_transaction_code(desc)
-            lines.append(f":61:{d}{d[2:]}{txn_type}{amt}{code}")
-            for seg in segment_description(desc):
-                lines.append(f":86:{seg}")
-        except Exception as e:
-            logging.error(f"Błąd w transakcji #{idx+1} ({d}, {a}): {e}")
-            lines.append(f":61:{d}{d[2:]}C00000000,00NTRFNON
+    for d, a, desc in transactions:
+        txn_type = 'D' if a.startswith('-') else 'C'
+        amt = pad_amount(a.lstrip('-'))
+        code = map_transaction_code(desc)
+        lines.append(f":61:{d}{d[2:]}{txn_type}{amt}{code}")
+        for seg in segment_description(desc):
+            lines.append(f":86:{seg}")
+    lines.append(f":62F:{cd62}{end}PLN{amt62}")
+    lines.append("-")
+    mt940 = "\n".join(lines)
+    return remove_trailing_86(mt940)
 
 def save_mt940_file(mt940_text, output_path):
     with open(output_path,"w",encoding="windows-1250",newline="\r\n") as f:
@@ -212,4 +210,3 @@ if __name__ == "__main__":
         print(f"❌ Błąd: {e}")
         traceback.print_exc()
         sys.exit(1)
-
