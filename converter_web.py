@@ -114,23 +114,42 @@ def pekao_parser(text):
     return account, saldo_pocz, saldo_konc, deduplicate_transactions(transactions), num_20, num_28C
 
 def remove_trailing_86(mt940_text):
-    # Usuwa wszystkie :86: po ostatnim :61:
+    """
+    Usuwa NADMIAROWE linie :86: po ostatnim :61:, zostawiając :62F: i '-'.
+    Nigdy nie usuwa transakcyjnych :61:/:86:, salda końcowego ani znaku '-'.
+    """
     lines = mt940_text.strip().split('\n')
+    # Znajdź indeks ostatniego :61:
     last_61_idx = -1
-    for i, line in enumerate(lines):
+    for idx, line in enumerate(lines):
         if line.startswith(':61:'):
-            last_61_idx = i
-    end_idx = last_61_idx
-    for i in range(last_61_idx+1, len(lines)):
-        if not lines[i].startswith(':86:'):
-            end_idx = i
+            last_61_idx = idx
+
+    # Jeśli nie było żadnego :61:, nie ruszaj niczego
+    if last_61_idx == -1:
+        return mt940_text if mt940_text.endswith('\n') else mt940_text + '\n'
+
+    # Przekopiuj wszystko do ostatniego :61:, włączając powiązane pola :86: (czyli do :62F:),
+    # a po nim kopiuj wyłącznie :62F: i '-'
+    result = []
+    idx = 0
+    # wszystko do pierwszego :62F:
+    while idx < len(lines):
+        line = lines[idx]
+        if line.startswith(':62F:'):
             break
-    tail=[]
-    for line in lines[end_idx:]:
+        result.append(line)
+        idx += 1
+
+    # kopiujemy :62F: jeśli znalezione, potem wszystko do końca pliku (stopka '-')
+    while idx < len(lines):
+        line = lines[idx]
         if line.startswith(':62F:') or line == '-':
-            tail.append(line)
-    clean_text = "\n".join(lines[:end_idx] + tail)
-    return clean_text + ("\n" if not clean_text.endswith('\n') else "")
+            result.append(line)
+        idx += 1
+
+    return "\n".join(result) + "\n"
+
 
 def build_mt940(account, saldo_pocz, saldo_konc, transactions, num_20="1", num_28C="00001"):
     today = datetime.today().strftime("%y%m%d")
