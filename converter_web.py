@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
-import sys, os, re, io, traceback, unicodedata
+import sys, os, re, io, traceback, unicodedata, logging
 from datetime import datetime
 import pdfplumber
+
+logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
 try:
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
@@ -43,33 +45,6 @@ def format_account_for_25(acc_raw):
     if not acc.startswith('/'): return f"/{acc}"
     return acc
 
-def enrich_desc_for_86(desc):
-    if not desc: return ""
-    d = desc
-    iban = re.search(r'(PL\d{26})', d)
-    if iban and not d.startswith(iban.group(1)):
-        d = iban.group(1)+" "+d
-    d = re.sub(r'Kwota VAT\s*[:=]', 'VAT:', d, flags=re.IGNORECASE)
-    d = remove_diacritics(d)
-    return re.sub(r'\s+',' ',d).strip()
-
-def split_description(desc, first_len=200, next_len=65):
-    d = remove_diacritics(desc or "")
-    segs=[]
-    while d:
-        if not segs: segs.append(d[:first_len])
-        else: segs.append(d[:next_len])
-        d=d[len(segs[-1]):]
-    return segs
-
-def deduplicate_transactions(transactions):
-    seen=set(); out=[]
-    for t in transactions:
-        key=(t[0],t[1],t[2][:50])
-        if key not in seen:
-            seen.add(key); out.append(t)
-    return out
-
 def extract_mt940_headers(text):
     num_20 = '1'
     num_28C = '00001'
@@ -89,41 +64,51 @@ def map_transaction_code(desc):
     return 'NTRFNONREF'
 
 def segment_description(desc):
-    parts = []
     desc = remove_diacritics(desc)
+    segments = []
+    seen = set()
+
+    def add_segment(prefix, value):
+        key = f"{prefix}{value}"
+        if key not in seen:
+            segments.append(f"^{prefix}{value}")
+            seen.add(key)
+
     iban = re.search(r'(PL\d{26})', desc)
-    if iban: parts.append(f"^38{iban.group(1)}")
+    if iban: add_segment("38", iban.group(1))
+
     ref = re.search(r'Nr ref[ .:]*([A-Z0-9]+)', desc)
-    if ref: parts.append(f"^20{ref.group(1)}")
+    if ref: add_segment("20", ref.group(1))
+
     vat = re.search(r'VAT[:= ]*PLN\s?([\d,\.]+)', desc)
-    if vat: parts.append(f"^00VAT: PLN {vat.group(1)}")
+    if vat: add_segment("00", f"VAT: PLN {vat.group(1)}")
+
     name = re.search(r'([A-Z][A-Z\s\.]+)', desc)
-    if name: parts.append(f"^32{name.group(1).strip()}")
-    parts.append(f"^00{desc}")
-    return parts
+    if name: add_segment("32", name.group(1).strip())
+
+    add_segment("00", desc)
+    return segments
 
 def remove_trailing_86(mt940_text):
     lines = mt940_text.strip().split('\n')
-    last_61_idx = -1
-    for idx, line in enumerate(lines):
-        if line.startswith(':61:'):
-            last_61_idx = idx
-    if last_61_idx == -1:
-        return mt940_text if mt940_text.endswith('\n') else mt940_text + '\n'
     result = []
-    idx = 0
-    while idx < len(lines):
-        line = lines[idx]
-        if line.startswith(':62F:'):
-            break
-        result.append(line)
-        idx += 1
-    while idx < len(lines):
-        line = lines[idx]
-        if line.startswith(':62F:') or line == '-':
+    seen_62F = False
+    for line in lines:
+        if line.startswith(':61:') or line.startswith(':62F:') or line == '-':
             result.append(line)
-        idx += 1
+            if line.startswith(':62F:'):
+                seen_62F = True
+        elif line.startswith(':86:') and not seen_62F:
+            result.append(line)
     return "\n".join(result) + "\n"
+
+def deduplicate_transactions(transactions):
+    seen=set(); out=[]
+    for t in transactions:
+        key=(t[0],t[1],t[2][:50])
+        if key not in seen:
+            seen.add(key); out.append(t)
+    return out
 
 def pekao_parser(text):
     account=""; saldo_pocz="0,00"; saldo_konc="0,00"; transactions=[]
@@ -172,29 +157,34 @@ def build_mt940(account, saldo_pocz, saldo_konc, transactions, num_20="1", num_2
              f":25:{acct}",
              f":28C:{num_28C}",
              f":60F:{cd60}{start}PLN{amt60}"]
-    for d, a, desc in transactions:
-        txn_type = 'D' if a.startswith('-') else 'C'
-        amt = pad_amount(a.lstrip('-'))
-        code = map_transaction_code(desc)
-        lines.append(f":61:{d}{d[2:]}{txn_type}{amt}{code}")
-        for seg in segment_description(desc):
-            lines.append(f":86:{seg}")
+    for idx, (d, a, desc) in enumerate(transactions):
+        try:
+            txn_type = 'D' if a.startswith('-') else 'C'
+            amt = pad_amount(a.lstrip('-'))
+            code = map_transaction_code(desc)
+            lines.append(f":61:{d}{d[2:]}{txn_type}{amt}{code}")
+            for seg in segment_description(desc):
+                lines.append(f":86:{seg}")
+        except Exception as e:
+            logging.error(f"Błąd w transakcji #{idx+1} ({d}, {a}): {e}")
+            lines.append(f":61:{d}{d[2:]}C00000000,00NTRFNONREF")
+            lines.append(":86:^00❌ Błąd parsowania opisu transakcji")
     lines.append(f":62F:{cd62}{end}PLN{amt62}")
     lines.append("-")
     mt940 = "\n".join(lines)
     return remove_trailing_86(mt940)
 
 def save_mt940_file(mt940_text, output_path):
-    with open(output_path,"w",encoding="windows-1250",newline="\r\n") as f:
+    with open(output_path, "w", encoding="windows-1250", newline="\r\n") as f:
         f.write(mt940_text)
 
 def convert(pdf_path, output_path):
-    text=parse_pdf_text(pdf_path)
+    text = parse_pdf_text(pdf_path)
     print("=== WYPIS EKSTRAKTU Z PDF ===")
     print(text)
-    account,sp,sk,tx,num_20,num_28C = pekao_parser(text)
+    account, sp, sk, tx, num_20, num_28C = pekao_parser(text)
     print(f"📄 Transakcji: {len(tx)}")
-    mt940=build_mt940(account,sp,sk,tx,num_20,num_28C)
+    mt940 = build_mt940(account, sp, sk, tx, num_20, num_28C)
     save_mt940_file(mt940, output_path)
 
 if __name__ == "__main__":
