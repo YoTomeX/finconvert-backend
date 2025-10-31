@@ -28,8 +28,11 @@ def clean_amount(amount):
     return "{:.2f}".format(val).replace('.',',')
 
 def pad_amount(amt, width=11):
+    amt = amt.replace(' ', '').replace('\xa0','')
+    if ',' not in amt:
+        amt = amt + ',00'
     left, right = amt.split(',')
-    left = left.zfill(width-len(right)-1)
+    left = left.zfill(width - len(right) - 1)
     return f"{left},{right}"
 
 def format_account_for_25(acc_raw):
@@ -117,15 +120,11 @@ def remove_trailing_86(mt940_text):
     for i, line in enumerate(lines):
         if line.startswith(':61:'):
             last_61_idx = i
-    # Zezwalamy na pojawienie się :86: tylko do końca opisu ostatniej transakcji
     end_idx = last_61_idx
-    # Znajdujemy ostatni :86: po ostatnim :61:
     for i in range(last_61_idx+1, len(lines)):
         if not lines[i].startswith(':86:'):
             end_idx = i
             break
-    # Zachowujemy tylko linie do end_idx oraz saldo końcowe i stopkę
-    # Szukamy :62F: i "-"
     tail=[]
     for line in lines[end_idx:]:
         if line.startswith(':62F:') or line == '-':
@@ -156,7 +155,6 @@ def build_mt940(account, saldo_pocz, saldo_konc, transactions, num_20="1", num_2
     lines.append(f":62F:{cd62}{end}PLN{amt62}")
     lines.append("-")
     mt940 = "\n".join(lines)
-    # Usuwanie nadmiarowych :86: na końcu
     return remove_trailing_86(mt940)
 
 def save_mt940_file(mt940_text, output_path):
