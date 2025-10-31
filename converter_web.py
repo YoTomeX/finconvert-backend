@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
-import sys, os, re, io, traceback, unicodedata
+import sys, os, re, io, traceback, unicodedata, logging
 from datetime import datetime
 import pdfplumber
+
+logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
 try:
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
@@ -75,9 +77,55 @@ def extract_mt940_headers(text):
     num_28C = '00001'
     m20 = re.search(r':20:(\S+)', text)
     if m20: num_20 = m20.group(1)
-    m28c = re.search(r':28C:(\d+)', text)
-    if m28c: num_28C = m28c.group(1)
+    m28c = re.search(r'Numer wyciągu\s+(\d{4})', text)
+    if m28c: num_28C = m28c.group(1).zfill(5)
     return num_20, num_28C
+
+def map_transaction_code(desc):
+    desc = desc.lower()
+    if 'zus' in desc or 'krus' in desc: return 'N562'
+    if 'internet' in desc: return 'N775'
+    if 'express' in desc: return 'N178'
+    if 'międzybankowy' in desc: return 'N240'
+    if 'podzielony' in desc: return 'N641'
+    return 'NTRFNONREF'
+
+def segment_description(desc):
+    parts = []
+    desc = remove_diacritics(desc)
+    iban = re.search(r'(PL\d{26})', desc)
+    if iban: parts.append(f"^38{iban.group(1)}")
+    ref = re.search(r'Nr ref[ .:]*([A-Z0-9]+)', desc)
+    if ref: parts.append(f"^20{ref.group(1)}")
+    vat = re.search(r'VAT[:= ]*PLN\s?([\d,\.]+)', desc)
+    if vat: parts.append(f"^00VAT: PLN {vat.group(1)}")
+    name = re.search(r'([A-Z][A-Z\s\.]+)', desc)
+    if name: parts.append(f"^32{name.group(1).strip()}")
+    parts.append(f"^00{desc}")
+    return parts
+
+def remove_trailing_86(mt940_text):
+    lines = mt940_text.strip().split('\n')
+    last_61_idx = -1
+    for idx, line in enumerate(lines):
+        if line.startswith(':61:'):
+            last_61_idx = idx
+    if last_61_idx == -1:
+        return mt940_text if mt940_text.endswith('\n') else mt940_text + '\n'
+    result = []
+    idx = 0
+    while idx < len(lines):
+        line = lines[idx]
+        if line.startswith(':62F:'):
+            break
+        result.append(line)
+        idx += 1
+    while idx < len(lines):
+        line = lines[idx]
+        if line.startswith(':62F:') or line == '-':
+            result.append(line)
+        idx += 1
+    return "\n".join(result) + "\n"
 
 def pekao_parser(text):
     account=""; saldo_pocz="0,00"; saldo_konc="0,00"; transactions=[]
@@ -113,44 +161,6 @@ def pekao_parser(text):
     transactions.sort(key=lambda x:x[0])
     return account, saldo_pocz, saldo_konc, deduplicate_transactions(transactions), num_20, num_28C
 
-def remove_trailing_86(mt940_text):
-    """
-    Usuwa NADMIAROWE linie :86: po ostatnim :61:, zostawiając :62F: i '-'.
-    Nigdy nie usuwa transakcyjnych :61:/:86:, salda końcowego ani znaku '-'.
-    """
-    lines = mt940_text.strip().split('\n')
-    # Znajdź indeks ostatniego :61:
-    last_61_idx = -1
-    for idx, line in enumerate(lines):
-        if line.startswith(':61:'):
-            last_61_idx = idx
-
-    # Jeśli nie było żadnego :61:, nie ruszaj niczego
-    if last_61_idx == -1:
-        return mt940_text if mt940_text.endswith('\n') else mt940_text + '\n'
-
-    # Przekopiuj wszystko do ostatniego :61:, włączając powiązane pola :86: (czyli do :62F:),
-    # a po nim kopiuj wyłącznie :62F: i '-'
-    result = []
-    idx = 0
-    # wszystko do pierwszego :62F:
-    while idx < len(lines):
-        line = lines[idx]
-        if line.startswith(':62F:'):
-            break
-        result.append(line)
-        idx += 1
-
-    # kopiujemy :62F: jeśli znalezione, potem wszystko do końca pliku (stopka '-')
-    while idx < len(lines):
-        line = lines[idx]
-        if line.startswith(':62F:') or line == '-':
-            result.append(line)
-        idx += 1
-
-    return "\n".join(result) + "\n"
-
-
 def build_mt940(account, saldo_pocz, saldo_konc, transactions, num_20="1", num_28C="00001"):
     today = datetime.today().strftime("%y%m%d")
     start = transactions[0][0] if transactions else today
@@ -164,17 +174,17 @@ def build_mt940(account, saldo_pocz, saldo_konc, transactions, num_20="1", num_2
              f":25:{acct}",
              f":28C:{num_28C}",
              f":60F:{cd60}{start}PLN{amt60}"]
-    for d, a, desc in transactions:
-        txn_type = 'D' if a.startswith('-') else 'C'
-        amt = pad_amount(a.lstrip('-'))
-        lines.append(f":61:{d}{d[2:]}{txn_type}{amt}NTRFNONREF")
-        enriched = enrich_desc_for_86(desc)
-        for seg in split_description(enriched):
-            lines.append(f":86:{seg}")
-    lines.append(f":62F:{cd62}{end}PLN{amt62}")
-    lines.append("-")
-    mt940 = "\n".join(lines)
-    return remove_trailing_86(mt940)
+    for idx, (d, a, desc) in enumerate(transactions):
+        try:
+            txn_type = 'D' if a.startswith('-') else 'C'
+            amt = pad_amount(a.lstrip('-'))
+            code = map_transaction_code(desc)
+            lines.append(f":61:{d}{d[2:]}{txn_type}{amt}{code}")
+            for seg in segment_description(desc):
+                lines.append(f":86:{seg}")
+        except Exception as e:
+            logging.error(f"Błąd w transakcji #{idx+1} ({d}, {a}): {e}")
+            lines.append(f":61:{d}{d[2:]}C00000000,00NTRFNON
 
 def save_mt940_file(mt940_text, output_path):
     with open(output_path,"w",encoding="windows-1250",newline="\r\n") as f:
@@ -202,3 +212,4 @@ if __name__ == "__main__":
         print(f"❌ Błąd: {e}")
         traceback.print_exc()
         sys.exit(1)
+
