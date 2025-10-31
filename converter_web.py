@@ -65,6 +65,19 @@ def map_transaction_code(desc):
 
 def segment_description(desc):
     desc = remove_diacritics(desc)
+    
+    # Ucinanie stopki PDF-a jeśli występuje
+    stopka_keywords = [
+        "bank polska kasa opieki", "gwarancja bfg", "www.pekao.com.pl",
+        "kapital zakladowy", "sad rejonowy", "nr krs", "nip:"
+    ]
+    desc_lower = desc.lower()
+    for kw in stopka_keywords:
+        pos = desc_lower.find(kw)
+        if pos != -1:
+            desc = desc[:pos].strip()
+            break
+
     segments = []
     seen = set()
 
@@ -86,7 +99,8 @@ def segment_description(desc):
     name = re.search(r'([A-Z][A-Z\s\.]+)', desc)
     if name: add_segment("32", name.group(1).strip())
 
-    add_segment("00", desc)
+    # Usuń dołączanie całego opisu ^00, aby uniknąć powtórzeń stopek
+    
     return segments
 
 def remove_trailing_86(mt940_text):
