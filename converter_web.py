@@ -102,18 +102,26 @@ def segment_description(desc, code):
         if key not in segments:
             segments.append(f"^{prefix}{value}")
 
-    # dodanie kodu operacji jako pierwszy segment
-    segments.append(str(code))
-    # dodanie podstawowych segmentów
+    # Dodaj kod na początek pola :86: z prefiksem ^
+    segments.append(f"^{code}")
+
+    # Dodaj segmenty ^38 dla IBAN
+    ibans = re.findall(r'(PL\d{26})', desc)
+    for iban in ibans:
+        add_segment("38", iban)
+
     ref = re.search(r'Nr ref[ .:]*([A-Z0-9]+)', desc)
     if ref:
         add_segment("20", ref.group(1))
+
     vat = re.search(r'VAT[:= ]*PLN\s*([\d,\.]+)', desc)
     if vat:
         add_segment("00", f"VAT: PLN {vat.group(1)}")
+
     name = re.search(r'([A-Z][A-Z\s\.]+)', desc)
-    if name:
+    if name and len(name.group(1)) < 50:
         add_segment("32", name.group(1).strip())
+
     if not any(s.startswith("^00") for s in segments):
         add_segment("00", desc)
 
@@ -188,7 +196,6 @@ def pekao_parser(text):
 def build_mt940(account, saldo_pocz, saldo_konc, transactions, num_20="1", num_28C="00001"):
     today = datetime.today().strftime("%y%m%d")
 
-    # Walidacja numeru IBAN
     if not re.match(r'^PL\d{26}$', account):
         logging.warning("⚠️ Niepoprawny numer rachunku: %s", account)
 
@@ -214,20 +221,22 @@ def build_mt940(account, saldo_pocz, saldo_konc, transactions, num_20="1", num_2
             code = map_transaction_code(desc)
             num_code = code[1:] if code.startswith('N') else code
 
-            # Transakcja
             lines.append(f":61:{d}{d[2:]}{txn_type}{amt}{code}NONREF")
-            # Segmenty :) — oddzielone linie
+
             segments = segment_description(desc, num_code)
             for seg in segments:
+                if len(seg) > 250:
+                    seg = seg[:250]
                 lines.append(f":86:{seg}")
 
         except Exception as e:
             logging.error(f"Błąd w transakcji #{idx+1} ({d}, {a}): {e}")
             lines.append(f":61:{d}{d[2:]}C00000000,00NTRFNONREF")
             lines.append(":86:^00❌ Błąd parsowania opisu transakcji")
+            lines.append(":86:^999")
 
-    lines.append(f":62F:{cd}{end}PLN{amt62}")
-    lines.append(f":64:{cd}{end}PLN{amt62}")
+    lines.append(f":62F:{cd62}{end}PLN{amt62}")
+    lines.append(f":64:{cd62}{end}PLN{amt62}")
     lines.append("-")
 
     mt940 = "\n".join(lines)
