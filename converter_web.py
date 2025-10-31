@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import sys, os, re, io, traceback, unicodedata, logging
+import sys, re, io, traceback, unicodedata, logging
 from datetime import datetime
 import pdfplumber
 
@@ -15,22 +15,25 @@ def parse_pdf_text(pdf_path):
         return "\n".join((page.extract_text() or "") for page in pdf.pages)
 
 def remove_diacritics(text):
-    if not text: return ""
-    text = text.replace('ł','l').replace('Ł','L')
+    if not text:
+        return ""
+    text = text.replace('ł', 'l').replace('Ł', 'L')
     nkfd = unicodedata.normalize('NFKD', text)
     no_comb = "".join([c for c in nkfd if not unicodedata.combining(c)])
-    allowed = set(chr(i) for i in range(32,127)) | {'^'}
+    allowed = set(chr(i) for i in range(32, 127)) | {'^'}
     cleaned = ''.join(ch if ch in allowed else ' ' for ch in no_comb)
-    return re.sub(r'\s+',' ',cleaned).strip()
+    return re.sub(r'\s+', ' ', cleaned).strip()
 
 def clean_amount(amount):
-    s = str(amount).replace('\xa0','').replace(' ','').replace('.','').replace(',', '.')
-    try: val = float(s)
-    except: val = 0.0
-    return "{:.2f}".format(val).replace('.',',')
+    s = str(amount).replace('\xa0', '').replace(' ', '').replace('.', '').replace(',', '.')
+    try:
+        val = float(s)
+    except:
+        val = 0.0
+    return "{:.2f}".format(val).replace('.', ',')
 
 def pad_amount(amt, width=11):
-    amt = amt.replace(' ', '').replace('\xa0','')
+    amt = amt.replace(' ', '').replace('\xa0', '')
     if ',' not in amt:
         amt = amt + ',00'
     left, right = amt.split(',')
@@ -38,18 +41,22 @@ def pad_amount(amt, width=11):
     return f"{left},{right}"
 
 def format_account_for_25(acc_raw):
-    if not acc_raw: return "/PL00000000000000000000000000"
-    acc = re.sub(r'\s+','',acc_raw).upper()
-    if acc.startswith('PL') and len(acc)==28: return f"/{acc}"
-    if re.match(r'^\d{26}$', acc): return f"/PL{acc}"
-    if not acc.startswith('/'): return f"/{acc}"
+    if not acc_raw:
+        return "/PL00000000000000000000000000"
+    acc = re.sub(r'\s+', '', acc_raw).upper()
+    if acc.startswith('PL') and len(acc) == 28:
+        return f"/{acc}"
+    if re.match(r'^\d{26}$', acc):
+        return f"/PL{acc}"
+    if not acc.startswith('/'):
+        return f"/{acc}"
     return acc
 
 def extract_mt940_headers(text):
     num_20 = '1'
     num_28C = '00001'
     m20 = re.search(r':20:(\S+)', text)
-    if m20: 
+    if m20:
         num_20 = m20.group(1)
     m28c = re.search(r'(Numer wyciągu|Nr wyciągu|Wyciąg nr)\s*[:\-]?\s*(\d{4})[\/\-]?\d{4}', text, re.I)
     if m28c:
@@ -57,15 +64,20 @@ def extract_mt940_headers(text):
     return num_20, num_28C
 
 def map_transaction_code(desc):
-    desc = desc.lower()
-    if 'zus' in desc or 'krus' in desc: return 'N562'
-    if 'internet' in desc: return 'N775'
-    if 'express' in desc: return 'N178'
-    if 'międzybankowy' in desc: return 'N240'
-    if 'podzielony' in desc: return 'N641'
+    desc_lower = desc.lower()
+    if 'zus' in desc_lower or 'krus' in desc_lower:
+        return 'N562'
+    if 'internet' in desc_lower:
+        return 'N775'
+    if 'express' in desc_lower:
+        return 'N178'
+    if 'międzybankowy' in desc_lower:
+        return 'N240'
+    if 'podzielony' in desc_lower:
+        return 'N641'
     return 'NTRFNONREF'
 
-def segment_description(desc):
+def segment_description(desc, code):
     desc = remove_diacritics(desc)
 
     stopka_keywords = [
@@ -80,31 +92,28 @@ def segment_description(desc):
             desc = desc[:pos].strip()
             break
 
-    if len(desc) > 300:
-        desc = desc[:300].strip()
+    if len(desc) > 250:
+        desc = desc[:250].strip()
 
     segments = []
-    seen = set()
 
     def add_segment(prefix, value):
         key = f"{prefix}{value}"
-        if key not in seen:
+        if key not in segments:
             segments.append(f"^{prefix}{value}")
-            seen.add(key)
 
-    ibans = re.findall(r'(PL\d{26})', desc)
-    for iban in ibans:
-        add_segment("38", iban)
-
+    # dodanie kodu operacji jako pierwszy segment
+    segments.append(str(code))
+    # dodanie podstawowych segmentów
     ref = re.search(r'Nr ref[ .:]*([A-Z0-9]+)', desc)
-    if ref: add_segment("20", ref.group(1))
-
-    vat = re.search(r'VAT[:= ]*PLN\s?([\d,\.]+)', desc)
-    if vat: add_segment("00", f"VAT: PLN {vat.group(1)}")
-
+    if ref:
+        add_segment("20", ref.group(1))
+    vat = re.search(r'VAT[:= ]*PLN\s*([\d,\.]+)', desc)
+    if vat:
+        add_segment("00", f"VAT: PLN {vat.group(1)}")
     name = re.search(r'([A-Z][A-Z\s\.]+)', desc)
-    if name: add_segment("32", name.group(1).strip())
-
+    if name:
+        add_segment("32", name.group(1).strip())
     if not any(s.startswith("^00") for s in segments):
         add_segment("00", desc)
 
@@ -126,31 +135,40 @@ def remove_trailing_86(mt940_text):
     return "\n".join(result) + "\n"
 
 def deduplicate_transactions(transactions):
-    seen = set(); out = []
+    seen = set()
+    out = []
     for t in transactions:
         key = (t[0], t[1], t[2][:50])
         if key not in seen:
-            seen.add(key); out.append(t)
+            seen.add(key)
+            out.append(t)
     return out
 
 def pekao_parser(text):
-    account = ""; saldo_pocz = "0,00"; saldo_konc = "0,00"; transactions = []
+    account = ""
+    saldo_pocz = "0,00"
+    saldo_konc = "0,00"
+    transactions = []
+
     num_20, num_28C = extract_mt940_headers(text)
     lines = text.splitlines()
     for line in lines:
         acc = re.search(r'(PL\d{2}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4})', line)
-        if acc: account = re.sub(r'\s+', '', acc.group(1))
-        sp = re.search(r'SALDO POCZĄTKOWE\s*:?[\s-]*(\-?\d[\d\s,]*)', line, re.I)
-        if sp: saldo_pocz = clean_amount(sp.group(1))
-        sk = re.search(r'SALDO KOŃCOWE\s*:?[\s-]*(\-?\d[\d\s,]*)', line, re.I)
-        if sk: saldo_konc = clean_amount(sk.group(1))
+        if acc:
+            account = re.sub(r'\s+', '', acc.group(1))
+        sp = re.search(r'SALDO POCZĄTKOWE\s*[:\-]?\s*([\-\d\s,]+)', line, re.I)
+        if sp:
+            saldo_pocz = clean_amount(sp.group(1))
+        sk = re.search(r'SALDO KOŃCOWE\s*[:\-]?\s*([\-\d\s,]+)', line, re.I)
+        if sk:
+            saldo_konc = clean_amount(sk.group(1))
     i = 0
     while i < len(lines):
         m = re.match(r'(\d{2}/\d{2}/\d{4})', lines[i].strip())
         if m:
             dt = datetime.strptime(m.group(1), "%d/%m/%Y").strftime("%y%m%d")
             amt = None
-            amt_match = re.match(r'\d{2}/\d{2}/\d{4}\s*(-?\d[\d.,]*)', lines[i])
+            amt_match = re.match(r'\d{2}/\d{2}/\d{4}\s*(-?\d[\d.,]+)', lines[i])
             if amt_match:
                 amt = clean_amount(amt_match.group(1))
             desc_lines = []
@@ -158,9 +176,9 @@ def pekao_parser(text):
             while j < len(lines) and not re.match(r'\d{2}/\d{2}/\d{4}', lines[j].strip()):
                 desc_lines.append(lines[j].strip())
                 j += 1
-            desc = " ".join(desc_lines)
+            desc = " ".join(desc_lines).strip()
             desc = desc if desc else lines[i]
-            transactions.append((dt, amt or "0,00", desc.strip()))
+            transactions.append((dt, amt or "0,00", desc))
             i = j
         else:
             i += 1
@@ -170,7 +188,7 @@ def pekao_parser(text):
 def build_mt940(account, saldo_pocz, saldo_konc, transactions, num_20="1", num_28C="00001"):
     today = datetime.today().strftime("%y%m%d")
 
-    # Walidacja numeru rachunku IBAN
+    # Walidacja numeru IBAN
     if not re.match(r'^PL\d{26}$', account):
         logging.warning("⚠️ Niepoprawny numer rachunku: %s", account)
 
@@ -181,24 +199,37 @@ def build_mt940(account, saldo_pocz, saldo_konc, transactions, num_20="1", num_2
     cd62 = 'D' if saldo_konc.startswith('-') else 'C'
     amt60 = pad_amount(saldo_pocz.lstrip('-'))
     amt62 = pad_amount(saldo_konc.lstrip('-'))
-    lines = [f":20:{num_20}",
-             f":25:{acct}",
-             f":28C:{num_28C}",
-             f":60F:{cd60}{start}PLN{amt60}"]
+
+    lines = [
+        f":20:{num_20}",
+        f":25:{acct}",
+        f":28C:{num_28C}",
+        f":60F:{cd60}{start}PLN{amt60}"
+    ]
+
     for idx, (d, a, desc) in enumerate(transactions):
         try:
             txn_type = 'D' if a.startswith('-') else 'C'
             amt = pad_amount(a.lstrip('-'))
             code = map_transaction_code(desc)
-            lines.append(f":61:{d}{d[2:]}{txn_type}{amt}{code}")
-            segments = segment_description(desc)
-            lines.append(f":86:{''.join(segments)}")  # segmenty sklejamy w jednej linii :86:
+            num_code = code[1:] if code.startswith('N') else code
+
+            # Transakcja
+            lines.append(f":61:{d}{d[2:]}{txn_type}{amt}{code}NONREF")
+            # Segmenty :) — oddzielone linie
+            segments = segment_description(desc, num_code)
+            for seg in segments:
+                lines.append(f":86:{seg}")
+
         except Exception as e:
             logging.error(f"Błąd w transakcji #{idx+1} ({d}, {a}): {e}")
             lines.append(f":61:{d}{d[2:]}C00000000,00NTRFNONREF")
             lines.append(":86:^00❌ Błąd parsowania opisu transakcji")
-    lines.append(f":62F:{cd62}{end}PLN{amt62}")
+
+    lines.append(f":62F:{c d}{end}PLN{amt62}")
+    lines.append(f":64:{c d}{end}PLN{amt62}")
     lines.append("-")
+
     mt940 = "\n".join(lines)
     return remove_trailing_86(mt940)
 
