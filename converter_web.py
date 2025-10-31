@@ -1,18 +1,37 @@
 #!/usr/bin/env python3
-import sys, re, io, traceback, unicodedata, logging
+import sys, re, traceback, unicodedata, logging
 from datetime import datetime
 import pdfplumber
+import argparse
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
-try:
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-except Exception:
-    pass
+HEADERS_BREAK = (':20:', ':25:', ':28C:', ':60F:', ':62F:', ':64:', '-')
+INSTITUTIONAL_STOPWORDS = [
+    "strona", "suma obrotów", "podsumowanie", "razem:", "kwota do rozliczenia:"
+]
+
+def normalize_account(account):
+    if not account:
+        logging.debug("Brak numeru rachunku, wpisuję domyślny PL00000000000000000000000000")
+        return "/PL00000000000000000000000000"
+    a = re.sub(r'\s+', '', account).upper()
+    if re.match(r'^PL\d{26}$', a):
+        return f"/{a}"
+    if re.match(r'^[A-Z]{2}\d{2}[A-Z0-9]{10,30}$', a):
+        return f"/{a}"
+    if re.match(r'^\d{26}$', a):
+        return f"/PL{a}"
+    logging.debug(f"Nieznany format IBAN: {a}")
+    return f"/{a}" if not a.startswith('/') else a
 
 def parse_pdf_text(pdf_path):
-    with pdfplumber.open(pdf_path) as pdf:
-        return "\n".join((page.extract_text() or "") for page in pdf.pages)
+    try:
+        with pdfplumber.open(pdf_path) as pdf:
+            return "\n".join((page.extract_text() or "") for page in pdf.pages)
+    except Exception as e:
+        logging.exception(f"PDF parse error: {e}")
+        return ""
 
 def remove_diacritics(text):
     if not text:
@@ -20,37 +39,29 @@ def remove_diacritics(text):
     text = text.replace('ł', 'l').replace('Ł', 'L')
     nkfd = unicodedata.normalize('NFKD', text)
     no_comb = "".join([c for c in nkfd if not unicodedata.combining(c)])
-    allowed = set(chr(i) for i in range(32, 127)) | {'^'}
+    allowed = set(chr(i) for i in range(32,127)) | {'^'}
     cleaned = ''.join(ch if ch in allowed else ' ' for ch in no_comb)
-    return re.sub(r'\s+', ' ', cleaned).strip()
+    return re.sub(r'\s+',' ',cleaned).strip()
 
 def clean_amount(amount):
-    s = str(amount).replace('\xa0', '').replace(' ', '').replace('.', '').replace(',', '.')
+    s = str(amount).replace('\xa0','').replace(' ','').replace('.', '').replace(',', '.')
     try:
         val = float(s)
-    except:
+    except Exception:
         val = 0.0
     return "{:.2f}".format(val).replace('.', ',')
 
 def pad_amount(amt, width=11):
-    amt = amt.replace(' ', '').replace('\xa0', '')
-    if ',' not in amt:
-        amt = amt + ',00'
-    left, right = amt.split(',')
-    left = left.zfill(width - len(right) - 1)
-    return f"{left},{right}"
-
-def format_account_for_25(acc_raw):
-    if not acc_raw:
-        return "/PL00000000000000000000000000"
-    acc = re.sub(r'\s+', '', acc_raw).upper()
-    if acc.startswith('PL') and len(acc) == 28:
-        return f"/{acc}"
-    if re.match(r'^\d{26}$', acc):
-        return f"/PL{acc}"
-    if not acc.startswith('/'):
-        return f"/{acc}"
-    return acc
+    try:
+        amt = amt.replace(' ', '').replace('\xa0', '')
+        if ',' not in amt:
+            amt = amt + ',00'
+        left, right = amt.split(',')
+        left = left.zfill(width - len(right) - 1)
+        return f"{left},{right}"
+    except Exception as e:
+        logging.warning(f"pad_amount error: {e} -> {amt}")
+        return '0'.zfill(width - 3) + ',00'
 
 def extract_mt940_headers(text):
     num_20 = '1'
@@ -58,59 +69,66 @@ def extract_mt940_headers(text):
     m20 = re.search(r':20:(\S+)', text)
     if m20:
         num_20 = m20.group(1)
-    m28c = re.search(r'(Numer wyciągu|Nr wyciągu|Wyciąg nr)\s*[:\-]?\s*(\d{4})[\/\-]?\d{4}', text, re.I)
+    m28c = re.search(r'(Numer wyciągu|Nr wyciągu|Wyciąg nr)\s*[:\-]?\s*(\d{1,5})(?:[\/\-][A-Za-z0-9]+)?', text, re.I)
     if m28c:
         num_28C = m28c.group(2).zfill(5)
     return num_20, num_28C
 
 def map_transaction_code(desc):
-    desc_lower = desc.lower()
-    if 'zus' in desc_lower or 'krus' in desc_lower:
-        return 'N562'
-    if 'internet' in desc_lower:
-        return 'N775'
-    if 'express' in desc_lower:
-        return 'N178'
-    if 'międzybankowy' in desc_lower:
-        return 'N240'
-    if 'podzielony' in desc_lower:
-        return 'N641'
+    desc_lower = remove_diacritics(desc).lower()
+    if 'zus' in desc_lower or 'krus' in desc_lower: return 'N562'
+    if 'internet' in desc_lower: return 'N775'
+    if 'express' in desc_lower: return 'N178'
+    if 'miedzybankowy' in desc_lower: return 'N240'
+    if 'podzielony' in desc_lower: return 'N641'
     return 'NTRFNONREF'
 
 def segment_description(desc, code):
     desc = remove_diacritics(desc)
+    desc_lower = desc.lower()
+    # Filtr stopki/instytucji
+    for kw in INSTITUTIONAL_STOPWORDS:
+        pos = desc_lower.find(kw)
+        if pos != -1:
+            desc = desc[:pos].strip()
+            desc_lower = desc.lower()
+            break
 
     stopka_keywords = [
         "bank polska kasa opieki", "gwarancja bfg", "www.pekao.com.pl",
         "kapital zakladowy", "sad rejonowy", "nr krs", "nip:",
         "oprocentowanie", "arkusz informacyjny", "informacja dotyczaca trybu"
     ]
-    desc_lower = desc.lower()
     for kw in stopka_keywords:
         pos = desc_lower.find(kw)
         if pos != -1:
             desc = desc[:pos].strip()
             break
 
-    if len(desc) > 250:
-        desc = desc[:250].strip()
-
     segments = []
+    seen = set()
 
     def add_segment(prefix, value):
-        key = f"{prefix}{value}"
-        if key not in segments:
-            segments.append(f"^{prefix}{value}")
+        if not value:
+            return
+        key = f"{prefix}{str(value)[:120]}"
+        if key not in seen:
+            clean_value = str(value)
+            clean_value = re.sub(r'[\x00-\x1f]+', ' ', clean_value).strip()
+            if prefix == "00" and len(clean_value) > 250:
+                clean_value = clean_value[:250].rsplit(' ', 1)[0]
+            if len(clean_value) > 250:
+                clean_value = clean_value[:250].rsplit(' ', 1)[0]
+            segments.append(f"^{prefix}{clean_value}")
+            seen.add(key)
 
-    # Dodaj kod na początek pola :86: z prefiksem ^
     segments.append(f"^{code}")
 
-    # Dodaj segmenty ^38 dla IBAN
     ibans = re.findall(r'(PL\d{26})', desc)
     for iban in ibans:
         add_segment("38", iban)
 
-    ref = re.search(r'Nr ref[ .:]*([A-Z0-9]+)', desc)
+    ref = re.search(r'N[ro]* ref[ .:]*([\w\-\/\.]+)', remove_diacritics(desc), re.I)
     if ref:
         add_segment("20", ref.group(1))
 
@@ -118,9 +136,11 @@ def segment_description(desc, code):
     if vat:
         add_segment("00", f"VAT: PLN {vat.group(1)}")
 
-    name = re.search(r'([A-Z][A-Z\s\.]+)', desc)
-    if name and len(name.group(1)) < 50:
-        add_segment("32", name.group(1).strip())
+    name = re.search(r'([A-Z][A-Z\s\.]{3,50})', desc)
+    if name:
+        val = name.group(1).strip()
+        if ' ' in val and val not in ('FAKTURA', 'SACC', 'PRZELEW', 'F/'):
+            add_segment("32", val)
 
     if not any(s.startswith("^00") for s in segments):
         add_segment("00", desc)
@@ -130,17 +150,35 @@ def segment_description(desc, code):
 def remove_trailing_86(mt940_text):
     lines = mt940_text.strip().split('\n')
     result = []
-    seen_62F = False
+    valid_transaction = False
     for line in lines:
-        if line.startswith(':61:') or line.startswith(':62F:') or line == '-':
+        if line.startswith(':61:'):
+            valid_transaction = True
             result.append(line)
-            if line.startswith(':62F:'):
-                seen_62F = True
-        elif line.startswith(':86:') and not seen_62F:
+        elif line.startswith(':86:'):
+            if valid_transaction:
+                result.append(line)
+            else:
+                logging.warning("Pomijam linię :86: bez poprzedniego :61:")
+        elif any(line.startswith(h) for h in HEADERS_BREAK):
+            valid_transaction = False
             result.append(line)
-        elif not line.startswith(':86:'):
+        else:
             result.append(line)
     return "\n".join(result) + "\n"
+
+def ensure_each_61_has_86(lines):
+    res = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        res.append(line)
+        if line.startswith(':61:'):
+            has_86 = (i+1 < len(lines) and lines[i+1].startswith(':86:'))
+            if not has_86:
+                res.append(':86:^00 Brak opisu')
+        i += 1
+    return res
 
 def deduplicate_transactions(transactions):
     seen = set()
@@ -157,7 +195,6 @@ def pekao_parser(text):
     saldo_pocz = "0,00"
     saldo_konc = "0,00"
     transactions = []
-
     num_20, num_28C = extract_mt940_headers(text)
     lines = text.splitlines()
     for line in lines:
@@ -193,15 +230,18 @@ def pekao_parser(text):
     transactions.sort(key=lambda x: x[0])
     return account, saldo_pocz, saldo_konc, deduplicate_transactions(transactions), num_20, num_28C
 
-def build_mt940(account, saldo_pocz, saldo_konc, transactions, num_20="1", num_28C="00001"):
-    today = datetime.today().strftime("%y%m%d")
+def build_mt940(account, saldo_pocz, saldo_konc, transactions, num_20="1", num_28C="00001", today=None):
+    if today is None:
+        today = datetime.today().strftime("%y%m%d")
 
-    if not re.match(r'^PL\d{26}$', account):
-        logging.warning("⚠️ Niepoprawny numer rachunku: %s", account)
+    acct = normalize_account(account)
+    if not transactions:
+        logging.warning("⚠️ Brak transakcji w pliku PDF.")
+        start = end = today
+    else:
+        start = transactions[0][0]
+        end = transactions[-1][0]
 
-    start = transactions[0][0] if transactions else today
-    end = transactions[-1][0] if transactions else today
-    acct = format_account_for_25(account)
     cd60 = 'D' if saldo_pocz.startswith('-') else 'C'
     cd62 = 'D' if saldo_konc.startswith('-') else 'C'
     amt60 = pad_amount(saldo_pocz.lstrip('-'))
@@ -213,24 +253,25 @@ def build_mt940(account, saldo_pocz, saldo_konc, transactions, num_20="1", num_2
         f":28C:{num_28C}",
         f":60F:{cd60}{start}PLN{amt60}"
     ]
-
     for idx, (d, a, desc) in enumerate(transactions):
         try:
             txn_type = 'D' if a.startswith('-') else 'C'
+            entry = (d[2:6] if len(d) >= 6 else d).ljust(4, '0')[:4]
             amt = pad_amount(a.lstrip('-'))
             code = map_transaction_code(desc)
             num_code = code[1:] if code.startswith('N') else code
 
-            lines.append(f":61:{d}{d[2:]}{txn_type}{amt}{code}NONREF")
+            lines.append(f":61:{d}{entry}{txn_type}{amt}{code}NONREF")
 
             segments = segment_description(desc, num_code)
             for seg in segments:
+                seg = re.sub(r'[\x00-\x1f]+',' ', seg).strip()
                 if len(seg) > 250:
-                    seg = seg[:250]
+                    seg = seg[:250].rsplit(' ', 1)[0]
                 lines.append(f":86:{seg}")
 
-        except Exception as e:
-            logging.error(f"Błąd w transakcji #{idx+1} ({d}, {a}): {e}")
+        except Exception:
+            logging.exception(f"Błąd w transakcji #{idx + 1}")
             lines.append(f":61:{d}{d[2:]}C00000000,00NTRFNONREF")
             lines.append(":86:^00❌ Błąd parsowania opisu transakcji")
             lines.append(":86:^999")
@@ -239,6 +280,7 @@ def build_mt940(account, saldo_pocz, saldo_konc, transactions, num_20="1", num_2
     lines.append(f":64:{cd62}{end}PLN{amt62}")
     lines.append("-")
 
+    lines = ensure_each_61_has_86(lines)
     mt940 = "\n".join(lines)
     return remove_trailing_86(mt940)
 
@@ -246,25 +288,70 @@ def save_mt940_file(mt940_text, output_path):
     with open(output_path, "w", encoding="windows-1250", newline="\r\n") as f:
         f.write(mt940_text)
 
-def convert(pdf_path, output_path):
-    text = parse_pdf_text(pdf_path)
-    print("=== WYPIS EKSTRAKTU Z PDF ===")
-    print(text)
+# TESTY sanityczne
+def test_pad_amount():
+    assert pad_amount("1234,56") == "000001234,56"
+    assert pad_amount("1 234,56") == "000001234,56"
+    assert pad_amount("1234") == "000001234,00"
+    assert pad_amount("abc") == "000000000,00"
+    print("test_pad_amount OK")
+
+def test_pad_amount_negative():
+    assert pad_amount("-1234,56") == "000001234,56"
+    print("test_pad_amount_negative OK")
+
+def test_extract_mt940_headers():
+    s1 = "Numer wyciągu 0009/2025"
+    s2 = "Nr wyciągu: 9"
+    assert extract_mt940_headers(s1) == ('1', '00009')
+    assert extract_mt940_headers(s2) == ('1', '00009')
+    print("test_extract_mt940_headers OK")
+
+def test_segment_description_long_stopka():
+    desc = ("PIOTR KOWALSKI PRZELEW VAT: PLN 27,76 "
+            "Strona 1/2 Podsumowanie operacji Suma obrotów Kwota do rozliczenia")
+    segs = segment_description(desc, "562")
+    assert any("PIOTR KOWALSKI" in s for s in segs)
+    print("test_segment_description_long_stopka OK")
+
+def test_empty_transactions():
+    mt940 = build_mt940("PL61109014680000000061234567", "123,00", "123,00", [])
+    assert ":61:" not in mt940
+    print("test_empty_transactions OK")
+
+def main():
+    parser = argparse.ArgumentParser(description="Konwerter PDF do MT940")
+    parser.add_argument("input_pdf")
+    parser.add_argument("output_mt940")
+    parser.add_argument("--debug", action="store_true", help="Wypis tekstu PDF, testy sanityczne, fragment MT940")
+    args = parser.parse_args()
+
+    if args.debug:
+        logging.getLogger().setLevel(logging.DEBUG)
+        test_pad_amount()
+        test_pad_amount_negative()
+        test_extract_mt940_headers()
+        test_segment_description_long_stopka()
+        test_empty_transactions()
+
+    text = parse_pdf_text(args.input_pdf)
+    if args.debug:
+        print("=== WYPIS EKSTRAKTU Z PDF ===")
+        print(text)
+
     account, sp, sk, tx, num_20, num_28C = pekao_parser(text)
-    print(f"📄 Transakcji: {len(tx)}")
     mt940 = build_mt940(account, sp, sk, tx, num_20, num_28C)
-    save_mt940_file(mt940, output_path)
+
+    if args.debug:
+        print("\n=== Pierwsze 10 linii MT940 ===")
+        print("\n".join(mt940.splitlines()[:10]))
+
+    save_mt940_file(mt940, args.output_mt940)
+    print("✅ Konwersja zakończona!")
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3:
-        print("Użycie: python converter_web.py input.pdf output.mt940")
-        sys.exit(1)
-    input_pdf = sys.argv[1]
-    output_mt940 = sys.argv[2]
     try:
-        convert(input_pdf, output_mt940)
-        print("✅ Konwersja zakończona!")
-    except Exception as e:
-        print(f"❌ Błąd: {e}")
-        traceback.print_exc()
+        main()
+    except Exception:
+        logging.exception("Błąd krytyczny")
         sys.exit(1)
