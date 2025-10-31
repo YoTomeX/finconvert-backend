@@ -66,7 +66,6 @@ def map_transaction_code(desc):
 def segment_description(desc):
     desc = remove_diacritics(desc)
 
-    # Ucinanie stopki PDF-a jeśli występuje
     stopka_keywords = [
         "bank polska kasa opieki", "gwarancja bfg", "www.pekao.com.pl",
         "kapital zakladowy", "sad rejonowy", "nr krs", "nip:",
@@ -118,6 +117,8 @@ def remove_trailing_86(mt940_text):
             if line.startswith(':62F:'):
                 seen_62F = True
         elif line.startswith(':86:') and not seen_62F:
+            result.append(line)
+        elif not line.startswith(':86:'):
             result.append(line)
     return "\n".join(result) + "\n"
 
