@@ -49,9 +49,11 @@ def extract_mt940_headers(text):
     num_20 = '1'
     num_28C = '00001'
     m20 = re.search(r':20:(\S+)', text)
-    if m20: num_20 = m20.group(1)
-    m28c = re.search(r'Numer wyciągu\s+(\d{4})', text)
-    if m28c: num_28C = m28c.group(1).zfill(5)
+    if m20: 
+        num_20 = m20.group(1)
+    m28c = re.search(r'(Numer wyciągu|Nr wyciągu|Wyciąg nr)\s*[:\-]?\s*(\d{4})[\/\-]?\d{4}', text, re.I)
+    if m28c:
+        num_28C = m28c.group(2).zfill(5)
     return num_20, num_28C
 
 def map_transaction_code(desc):
@@ -107,6 +109,7 @@ def segment_description(desc):
         add_segment("00", desc)
 
     return segments
+
 def remove_trailing_86(mt940_text):
     lines = mt940_text.strip().split('\n')
     result = []
@@ -166,6 +169,11 @@ def pekao_parser(text):
 
 def build_mt940(account, saldo_pocz, saldo_konc, transactions, num_20="1", num_28C="00001"):
     today = datetime.today().strftime("%y%m%d")
+
+    # Walidacja numeru rachunku IBAN
+    if not re.match(r'^PL\d{26}$', account):
+        logging.warning("⚠️ Niepoprawny numer rachunku: %s", account)
+
     start = transactions[0][0] if transactions else today
     end = transactions[-1][0] if transactions else today
     acct = format_account_for_25(account)
@@ -184,7 +192,7 @@ def build_mt940(account, saldo_pocz, saldo_konc, transactions, num_20="1", num_2
             code = map_transaction_code(desc)
             lines.append(f":61:{d}{d[2:]}{txn_type}{amt}{code}")
             segments = segment_description(desc)
-            lines.append(f":86:{''.join(segments)}")
+            lines.append(f":86:{''.join(segments)}")  # segmenty sklejamy w jednej linii :86:
         except Exception as e:
             logging.error(f"Błąd w transakcji #{idx+1} ({d}, {a}): {e}")
             lines.append(f":61:{d}{d[2:]}C00000000,00NTRFNONREF")
