@@ -226,8 +226,8 @@ def build_mt940(account, saldo_pocz, saldo_konc, transactions, num_20="1", num_2
             lines.append(f":61:{d}{d[2:]}C00000000,00NTRFNONREF")
             lines.append(":86:^00❌ Błąd parsowania opisu transakcji")
 
-    lines.append(f":62F:{c d}{end}PLN{amt62}")
-    lines.append(f":64:{c d}{end}PLN{amt62}")
+    lines.append(f":62F:{cd}{end}PLN{amt62}")
+    lines.append(f":64:{cd}{end}PLN{amt62}")
     lines.append("-")
 
     mt940 = "\n".join(lines)
