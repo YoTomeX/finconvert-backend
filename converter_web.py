@@ -49,14 +49,22 @@ def remove_diacritics(text):
         no_comb = no_comb.replace(old, new)
         
     # 3. Usuwanie niedozwolonych znaków
-    cleaned = re.sub(r'[^A-Z0-9\s,\.\-/\(\)\?\:\+\r\n]', ' ', no_comb.upper())
+    # Poprawiony regex, aby przepuszczał % (często używany w opisach)
+    cleaned = re.sub(r'[^A-Z0-9\s,\.\-/\(\)\?\:\+\r\n\%]', ' ', no_comb.upper()) 
     
     # 4. Usunięcie nadmiarowych spacji
     return re.sub(r'\s+',' ',cleaned).strip()
 
 def clean_amount(amount):
     """Czysci kwotę do formatu numerycznego (przecinek jako separator dziesiętny)."""
-    s = str(amount).replace('\xa0','').replace(' ','').replace('.', '').replace(',', '.')
+    # Ulepszone czyszczenie kwoty: pozwala na spacje i różne separatory
+    s = str(amount).replace('\xa0','').replace('.','').replace(' ','').replace('`', '') 
+    # Jeśli format to X.XXX,XX lub X XXX,XX, zamieniamy kropkę na brak
+    if re.search(r'\d\.\d{3}', s):
+        s = s.replace('.', '')
+    # Następnie zamieniamy ewentualny ostatni przecinek na kropkę
+    s = s.replace(',', '.')
+
     try:
         val = float(s)
     except Exception:
@@ -80,7 +88,8 @@ def pad_amount(amt, width=11):
         left = left.zfill(width - len(right) - 1)
         
         final_amt = f"{left},{right}"
-        return final_amt
+        # W MT940 znak debetu/kredytu jest w Field 61, a nie w kwocie.
+        return final_amt 
     except Exception as e:
         logging.warning("pad_amount error: %s -> %s", e, amt)
         return '0'.zfill(width-3)+',00'
@@ -100,7 +109,7 @@ def extract_mt940_headers(text):
     num_28C = '00001' # Numer wyciągu (domyślnie)
 
     # Szukamy numeru wyciągu/strony (często jest to 4 cyfry, np. 0001)
-    m28c = re.search(r'(Numer wyciągu|Nr wyciągu|Wyciąg nr)\s*[:\-]?\s*(\d{4})[\/\-]?\d{4}', text, re.I)
+    m28c = re.search(r'(Numer wyciągu|Nr wyciągu|Wyciąg nr|Wyciąg nr\.\s+)\s*[:\-]?\s*(\d{4})[\/\-]?\d{4}', text, re.I)
     if m28c: 
         num_28C = m28c.group(2).zfill(5)
     else:
@@ -168,45 +177,36 @@ def segment_description(desc, code):
         # Zabezpieczenie przed duplikatami (używamy prefixu i krótkiego kawałka tekstu jako klucza)
         key = f"{prefix}{clean_value[:50]}"
         if key not in seen:
-            segments.append(f"^{prefix}{clean_value}")
+            # Pole 86 w MT940 nie używa ^, jeśli opis jest jednoliniowy i krótki, ale dla struktury jest to bezpieczniejsze.
+            # Zmieniamy ^ na //, które jest bezpieczniejsze w polskiej interpretacji MT940.
+            segments.append(f"/{prefix}{clean_value}") 
             seen.add(key)
 
-    # 1. Segment KOD TRANSAKCJI (np. ^NTRF)
+    # 1. Segment KOD TRANSAKCJI (np. /NTRF)
     # Zapewniamy, że kod z Field 61 jest w segmencie 86
-    segments.append(f"^{code}")
-
-    # 2. IBAN Odbiorcy/Nadawcy (^38)
+    segments.append(f"/{code[1:]}") # Używamy TRF zamiast NTRF
+    
+    # 2. IBAN Odbiorcy/Nadawcy (/38)
     ibans = re.findall(r'(PL\d{26})', desc)
     for iban in ibans:
         add_segment("38", iban)
 
-    # 3. Numer Referencyjny / Numer Dokumentu (^20)
-    ref = re.search(r'NR REF[ .:]*([A-Z0-9]+)', desc)
-    if ref:
-        add_segment("20", ref.group(1))
+    # 3. Numer Referencyjny / Numer Dokumentu (/20)
+    # Wzmacniamy wyszukiwanie numeru referencyjnego/dokumentu
+    ref = re.search(r'(NR REF[ .:]|FAKTURA NR|FAKTURA)[:\s\.]*([A-Z0-9\/\-]+)', desc, re.I)
+    if ref: 
+        add_segment("20", ref.group(2)) # Bierze tylko faktyczną referencję
     
-    # 4. Numer Faktury (często w formacie F/2024/01)
-    invoice = re.search(r'(FAKTURA|F\/|NR FAKTURY|T:).{0,50}', desc, re.I)
-    if invoice:
-        # Próbujemy znaleźć pełną frazę po kluczowym słowie
-        line = invoice.group(0).strip()
-        # Usuwamy ewentualne początkowe T: lub FAKTURA:
-        clean_line = re.sub(r'^(FAKTURA|T|NR FAKTURY|F):?\s*', '', line, re.I).strip()
-        if clean_line:
-            add_segment("20", clean_line)
-
-    # 5. Nazwa Kontrahenta (^32)
-    # W Pekao nazwa jest często w osobnym wierszu. Szukamy ciągu dużych liter
-    # Ten regex jest bardzo ogólny i może wymagać dostrojenia do konkretnych PDF-ów
-    name = re.search(r'[A-Z][A-Z\s\.\,\-\']{5,100}', desc)
-    if name:
-        val = name.group(0).strip()
-        # Wykluczenie ogólnych słów i numerów kont (jeśli nie zostały wyłapane przez IBAN)
-        if not any(kw in val for kw in ['FAKTURA', 'PRZELEW', 'ZUS', 'KASA', 'BANK']) and len(val.split()) > 1:
-            add_segment("32", val)
+    # 4. Nazwa Kontrahenta (/32)
+    # Szukanie nazwy kontrahenta jest trudne, ulepszamy wzorzec, aby szukał po słowach kluczowych
+    # np. DLA: NAZWA KONTRAHENTA
+    name_match = re.search(r'(DLA:|OD:|T:)\s*([A-Z][A-Z\s\.\,\-\']{5,100})', desc)
+    if name_match:
+        val = name_match.group(2).strip()
+        add_segment("32", val)
             
-    # 6. Główny opis, jeśli nie ma ^00 (Cała reszta)
-    if not any(s.startswith("^00") for s in segments):
+    # 5. Główny opis, jeśli nie ma /00 (Cała reszta)
+    if not any(s.startswith("/00") for s in segments):
         add_segment("00", desc)
 
     return segments
@@ -248,6 +248,8 @@ def pekao_parser(text):
     """
     Parser dla wyciągów Pekao, wykorzystujący bardziej precyzyjne dopasowanie
     transakcji, aby uniknąć błędów parsowania opisu.
+    
+    Kluczowe poprawki: Wzmacniamy regex na transakcje.
     """
     account = ""; saldo_pocz = "0,00"; saldo_konc = "0,00"
     transactions = []
@@ -258,29 +260,32 @@ def pekao_parser(text):
     # 2. Parsowanie konta i sald
     lines = text.splitlines()
     for line in lines:
+        # Parsowanie konta
         acc = re.search(r'(PL\d{2}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4})', line)
         if acc: account = re.sub(r'\s+', '', acc.group(1))
+        
+        # Poprawione parsowanie salda: pozwala na dowolną liczbę spacji/separatorów
         sp = re.search(r'SALDO POCZĄTKOWE\s*[:\-]?\s*([\-\s\d,]+)', line, re.I)
         if sp: saldo_pocz = clean_amount(sp.group(1))
         sk = re.search(r'SALDO KOŃCOWE\s*[:\-]?\s*([\-\s\d,]+)', line, re.I)
         if sk: saldo_konc = clean_amount(sk.group(1))
-    
+        
     # 3. Parsowanie transakcji
     i = 0
     while i < len(lines):
         line = lines[i].strip()
         
-        # Precyzyjne dopasowanie transakcji (Data, Opcjonalna Kwota, Opis)
-        # Szukamy linii zaczynającej się od DD/MM/RRRR, po której może być Kwota
-        # (.*?) - Opis transakcji (może być pusty, ale niech zbiera cokolwiek)
-        # ([\-\d\s,\.]+) - Kwota z opcjonalnym minusem (na końcu wiersza)
+        # WZORZEC A (Ulepszony):
+        # Szukamy linii zaczynającej się od DD/MM/RRRR, po której następuje
+        # dowolny tekst (opis), a na końcu kwota z opcjonalnym znakiem - i walutą PLN.
+        # Ten wzorzec jest najbardziej prawdopodobny dla transakcji w jednej linii.
+        # (\d{2}\/\d{2}\/\d{4}) - Data Waluty (lub Operacji)
+        # (.*?) - Opis transakcji (leniwy, aby złapać tylko to, co trzeba)
+        # ([\-]?\s*[\d\s,]+\.?\d*) - Kwota (opcjonalny minus, cyfry, spacje, przecinki/kropki)
+        # (PLN\s*)$ - Waluta na końcu linii
         
-        # WZORZEC A: Data + Opis + Kwota na końcu
-        m_a = re.match(r'^(\d{2}\/\d{2}\/\d{4})\s+(.*?)\s+([\-\d\s,]+)\s*$', line)
+        m_a = re.match(r'^(\d{2}\/\d{2}\/\d{4})\s+(.*?)\s+([\-]?\s*[\d\s,]+\.?\d*)\s*PLN\s*$', line, re.I)
         
-        # WZORZEC B: Tylko Data (np. na początku bloku, jeśli kwota jest w następnym wierszu lub kolumnie)
-        m_b = re.match(r'^(\d{2}\/\d{2}\/\d{4})', line)
-
         dt = None
         amt = None
         
@@ -289,9 +294,10 @@ def pekao_parser(text):
             desc_part = m_a.group(2)
             amt_raw = m_a.group(3)
             
-            # Wzrost niezawodności: Sprawdź, czy opis nie jest tylko datą księgowania
-            if re.match(r'\d{2}\/\d{2}\/\d{4}', desc_part.strip()):
-                m_a = None # Odrzucamy to dopasowanie, jeśli to format DW | DK | Opis | Kwota (i DW/DK się zlały)
+            # Wzrost niezawodności: upewnij się, że opis nie jest kolejną datą (np. Data Operacji | Data Waluty | Opis)
+            if re.match(r'\d{2}\/\d{2}\/\d{4}', desc_part.strip().split()[-1] if desc_part.strip() else ''):
+                # Odrzucamy, jeśli ostatnia część opisu to data (sugeruje to format tabelaryczny z datą waluty)
+                m_a = None 
             else:
                 dt = datetime.strptime(dt_raw, "%d/%m/%Y").strftime("%y%m%d")
                 amt = clean_amount(amt_raw)
@@ -310,43 +316,7 @@ def pekao_parser(text):
                 transactions.append((dt, amt, desc))
                 i = j # Kontynuujemy od nowej transakcji lub końca opisu
                 continue
-                
-        # Jeśli WZORZEC A nie zadziałał, próbujemy WZORZEC B i liczymy na zebranie opisu w kolejnych wierszach
-        if m_b:
-            dt_raw = m_b.group(1)
-            
-            # Zaczynamy zbierać opis od wiersza z datą
-            desc_lines = [line.lstrip(dt_raw).strip()]
-            
-            dt = datetime.strptime(dt_raw, "%d/%m/%Y").strftime("%y%m%d")
-            
-            # Przechodzenie do następnej linii w poszukiwaniu opisu/kwoty
-            j = i + 1
-            kwota_znaleziona = False
-            
-            while j < len(lines) and not re.match(r'^\d{2}\/\d{2}\/\d{4}', lines[j].strip()) and lines[j].strip():
-                next_line = lines[j].strip()
-                
-                # Szukamy kwoty w bieżącej linii kontynuacji
-                amt_match = re.search(r'([\-\d\s,]+)\s*PLN\s*$', next_line)
-                if amt_match and not kwota_znaleziona:
-                    amt = clean_amount(amt_match.group(1))
-                    kwota_znaleziona = True
-                    # Usuwamy kwotę z opisu
-                    next_line = re.sub(r'([\-\d\s,]+)\s*PLN\s*$', '', next_line).strip()
-                
-                if next_line:
-                    desc_lines.append(next_line)
-                
-                j += 1
-                
-            # Wstawiamy transakcję tylko jeśli znaleźliśmy datę i kwotę
-            if dt and amt:
-                desc = " ".join(desc_lines).strip()
-                transactions.append((dt, amt, desc))
-                i = j
-                continue
-                
+        
         i += 1
         
     transactions.sort(key=lambda x: x[0])
@@ -387,38 +357,57 @@ def build_mt940(account, saldo_pocz, saldo_konc, transactions, num_20="1", num_2
             txn_type = 'D' if a.startswith('-') else 'C'
             
             # W MT940 Field 61: RRMMDD (data waluty) [RRMM] (data księgowania)
-            # W Pekao Data Waluty i Data Księgowania są bliskie. Używamy daty waluty (d)
-            # i dodajemy miesiąc i dzień (d[2:6]) jako datę księgowania (lub odwrotnie)
+            # Używamy d (data waluty) i d[2:6] (miesiąc i dzień) jako daty księgowania
             entry_date = d[2:6] if len(d) >= 6 else d # Domyślnie MM DD
             
             amt = pad_amount(a.lstrip('-'))
             code = map_transaction_code(desc)
             num_code = code[1:] if code.startswith('N') else code # Kod numeryczny dla Field 86
 
-            # Generowanie Field 61. Używamy NTRF jako domyślnej referencji, jeśli map_transaction_code zwraca NTRF.
-            # Jeśli map_transaction_code zwraca kod (np. N240), wstawiamy go jako kod banku.
-            # W Field 61 po kodzie powinna być referencja (np. //NONREF)
-            
-            # W MT940: :61:RRMMDD[RRMM]C/D[KWOTA]N[KOD_BANKU]//[REF_KLIENTA]
-            
-            # Sprawdzenie, czy kod jest już pełny (np. 'NTRFNONREF')
-            if code == 'NTRFNONREF':
+            # Generowanie Field 61. Używamy //NONREF jako referencji klienta, jeśli nie wyodrębniono innej.
+            if code == 'NTRFNONREF': # Jeśli jakimś cudem kod jest już pełny (wątpliwe)
                  lines.append(f":61:{d}{entry_date}{txn_type}{amt}{code}")
-                 code_for_86 = 'TRF' # Używamy TRF dla 86, jeśli kod jest 'NTRF'
+                 code_for_86 = 'TRF' 
             else:
-                 # Zakładamy, że referencja klienta nie została znaleziona w tym kroku, używamy //NONREF
                  lines.append(f":61:{d}{entry_date}{txn_type}{amt}{code}//NONREF")
                  code_for_86 = num_code
             
             # Segmentacja i dodanie Field 86
             segments = segment_description(desc, code_for_86)
             for seg in segments:
-                lines.append(f":86:{seg}")
+                # MT940 dopuszcza 65 znaków na linię :86:. Dzielimy dłuższe segmenty.
+                # Używamy //00/ dla ciągłego opisu
+                current_line = f":86:"
+                remaining_text = seg
+                
+                # Jeśli segment ma prefiks (np. /20, /38), umieszczamy go tylko w pierwszej linii.
+                prefix = re.match(r'^/\d{2,4}', remaining_text)
+                if prefix:
+                    remaining_text = remaining_text[prefix.end():]
+                    current_line += prefix.group(0)
+
+                # Dzielenie pozostałego tekstu
+                while remaining_text:
+                    if len(current_line) < 65:
+                        can_fit = 65 - len(current_line)
+                        lines.append(current_line + remaining_text[:can_fit])
+                        remaining_text = remaining_text[can_fit:]
+                        current_line = ":86:"
+                    else:
+                        # Jeśli pozostały tekst jest za długi na 65 znaków (co się nie powinno zdarzyć, ale zabezpieczenie)
+                        # Dodajemy nową linię :86: z kontynuacją
+                        lines.append(current_line)
+                        current_line = ":86:"
+                    
+                    # W kolejnych wierszach dodajemy separator
+                    if current_line == ":86:" and remaining_text:
+                        current_line += "//00/" 
+
 
         except Exception as e:
             logging.exception("Błąd w transakcji #%d (Data: %s, Kwota: %s)", idx+1, d, a)
             lines.append(f":61:{d}{d[2:]}C00000000,00NTRF//ERROR")
-            lines.append(":86:^00❌ BLAD PARSOWANIA OPISU TRANSAKCJI")
+            lines.append(":86:/00❌ BLAD PARSOWANIA OPISU TRANSAKCJI")
 
     lines.append(f":62F:{cd62}{end}PLN{amt62}")
     lines.append(f":64:{cd62}{end}PLN{amt62}")
@@ -440,6 +429,8 @@ def save_mt940_file(mt940_text, output_path):
 
 def main():
     parser = argparse.ArgumentParser(description="Konwerter PDF do MT940")
+    # Pamiętaj, że w Twoim środowisku Render ścieżki są przekazywane prawdopodobnie
+    # z Node.js, więc argumenty wejścia i wyjścia muszą być obsługiwane.
     parser.add_argument("input_pdf", help="Ścieżka do pliku wejściowego PDF.")
     parser.add_argument("output_mt940", help="Ścieżka do pliku wyjściowego MT940.")
     parser.add_argument("--debug", action="store_true", help="Włącz tryb debugowania (wypis tekstu PDF oraz testowe MT940).")
@@ -451,15 +442,20 @@ def main():
     text = parse_pdf_text(args.input_pdf)
 
     if args.debug:
-        print("\n=== WYPIS EKSTRAKTU Z PDF ===")
+        print("\n=== WYPIS EKSTRAKTU Z PDF (DEBUG) ===")
+        # Pamiętaj, aby skopiować ten tekst i przetestować na regex101.com jeśli problem nadal występuje!
         print(text)
         print("============================\n")
 
     account, sp, sk, tx, num_20, num_28C = pekao_parser(text)
+    
+    # Dodatkowe logowanie ile transakcji znaleziono
+    print(f"\nLICZBA TRANSAKCJI : {len(tx)}\n")
+    
     mt940 = build_mt940(account, sp, sk, tx, num_20, num_28C)
 
     if args.debug:
-        print("\n=== Pierwsze 10 linii MT940 ===")
+        print("\n=== Pierwsze 10 linii MT940 (DEBUG) ===")
         print("\n".join(mt940.splitlines()[:10]))
         print("============================\n")
 
