@@ -138,7 +138,7 @@ def map_transaction_code(desc):
     # Priorytet dla ZUS/KRUS
     if 'ZUS' in desc_upper or 'KRUS' in desc_upper: return 'N562'
     if 'PRZELEW PODZIELONY' in desc_upper: return 'N641'
-    if 'PRZELEW KRAJOWY' in desc_upper or 'PRZELEW MIEDZYBANKOWY' in desc_upper: return 'N240'
+    if 'PRZELEW KRAJOWY' in desc_upper or 'PRZELEW MIEDZYBANKOWY' in desc_upper or 'PRZELEW EXPRESS ELIXIR' in desc_upper: return 'N240'
     if 'OBCIAZENIE RACHUNKU' in desc_upper: return 'N495'
     if 'POBRANIE OPLATY' in desc_upper or 'PROWIZJA' in desc_upper: return 'N775'
     if 'WPLATA ZASILENIE' in desc_upper: return 'N524'
@@ -167,12 +167,11 @@ def segment_description(desc, code):
     
     # A. CZYSZCZENIE ZANIECZYSZCZEŃ
     for kw in stopka_keywords:
-        # Używamy re.search dla elastyczności, zwłaszcza dla regexów z numerami stron
         match = re.search(kw, desc_upper, re.I)
         if match:
             # Ucinamy tekst od miejsca znalezienia zanieczyszczenia
             desc = desc[:match.start()].strip()
-            desc_upper = desc.upper() # Aktualizujemy dużą literę
+            desc_upper = desc.upper()
             
     # Usuwanie nadmiarowych numerów referencyjnych w końcówce opisu
     desc = re.sub(r'NR REF\.\s*:\s*[A-Z0-9\/\-]+$', '', desc).strip()
@@ -189,14 +188,14 @@ def segment_description(desc, code):
         clean_value = str(value).strip()
         clean_value = re.sub(r'[\x00-\x1f]+', ' ', clean_value).strip() # Usuń niepożądane znaki
         
+        # Ograniczenie długości opisu (segment 00)
+        if prefix == "00" and len(clean_value) > 250:
+             clean_value = clean_value[:250].rsplit(' ', 1)[0]
+             
         # Kod referencyjny (20) i IBAN (38) są unikalne i dodajemy je tylko raz
         if prefix in ["20", "38"]:
             if clean_value in seen_refs: return
             seen_refs.add(clean_value)
-            
-        # MT940 line 86 max length is 65 * 4 = 260 characters
-        if len(clean_value) > 250:
-            clean_value = clean_value[:250].rsplit(' ', 1)[0]
             
         segments.append(f"/{prefix}{clean_value}")
         
@@ -206,25 +205,54 @@ def segment_description(desc, code):
     # B. EKSTRAKCJA TAGÓW
     
     # 1. Numer referencyjny klienta / Faktura (Pole 20) - Najważniejszy!
-    # Szukamy wyrażeń: "FAKTURA NR:", "FAKTURA", "NR REF:", lub po prostu ciągu A-Z0-9 o sensownej długości
+    # Używamy bardziej elastycznych regexów, by wyłapać numery nawet bez "NR REF.:"
     
-    # Próba A: Wyodrębnienie dedykowanego "Nr ref.:" lub "FAKTURA NR:"
-    ref_match = re.search(r'(NR REF\.|FAKTURA NR|FAKTURA|NR)[:\s\.]*([A-Z0-9\/\-\.]{5,35})', full_desc_clean, re.I)
-    if ref_match:
-        add_segment("20", ref_match.group(2))
-    
+    # Próba A: Jawny "FAKTURA", "NR REF.:"
+    ref_match_explicit = re.search(
+        r'(?:NR REF\.\s*:\s*|FAKTURA NR\s*:\s*|FAKTURA\s+)([A-Z0-9\/\-\.\:]{5,35})(?:\s+|$)', 
+        full_desc_clean, re.I
+    )
+    if ref_match_explicit:
+        add_segment("20", ref_match_explicit.group(1))
+    else:
+        # Próba B: Numer REFERENCYJNY transakcji (długi ciąg cyfr, często na końcu)
+        # Przykład: 1540901989851416 (często 16 cyfr lub dłuższy unikalny ciąg)
+        ref_match_implicit = re.search(
+            r'([A-Z]?\d{10,25}[A-Z]?)', 
+            full_desc_clean.split(' ')[-1], # Szukaj na samym końcu opisu
+            re.I
+        )
+        if ref_match_implicit:
+             add_segment("20", ref_match_implicit.group(1))
+
     # 2. IBAN (Pole 38 - beneficjent)
     ibans = re.findall(r'(PL\d{26})', full_desc_clean)
     for iban in ibans:
         add_segment("38", iban)
         
     # 3. Nazwa strony (Pole 32 - Nadawca/Odbiorca)
-    # Szukamy nazwy (zazwyczaj WIELKIE LITERY, nazwisko, lub nazwa firmy)
-    name_match = re.search(r'(BENF|PIOTR KOWALSKI|JAN MIZERSKI|BARTOSZ SEKIEWICZ|ANITA MARTYNA|ANNA PALUSINSKA|P4 SP\. Z O\.O\.|ANALYTICS QAL SERVICE SPOLKA Z OGRA)[:\s\.]*([A-Z\s\.\,\-\']{5,100})', full_desc_clean)
-    if name_match:
-        val = name_match.group(0).strip().split(' ', 1)[0] # Bierzemy tylko nazwę lub pierwszą część opisu
-        add_segment("32", name_match.group(0).split(' ', 1)[0]) # Używamy pierwszej części dopasowania jako nazwy
-
+    # Lista słów kluczowych oznaczających, że następuje nazwa
+    name_keywords = ['PRZELEW KRAJOWY MIEDZYBANKOWY', 'PRZELEW EXPRESS ELIXIR', 'PRZELEW JAN MIZERSKI', 'PRZELEW INTERNET M/B', 'PRZELEW MIEDZYBANKOWY BETA/INTEGRA', 'PRZELEW PODZIELONY DO ZUS/KRUS', 'ANALITYCS QAL SERVICE SPOLKA Z OGRA', 'P4 SP. Z O.O.', 'ANNA PALUSINSKA', 'ANITA MARTYNA SERWIN', 'BARTOSZ SEKIEWICZ CONSULTING', 'PIOTR KOWALSKI PJMK.WORLD']
+    
+    extracted_name = ""
+    for kw in name_keywords:
+        # Szukamy nazwy, która występuje po słowie kluczowym, a przed adresem lub innym tagiem
+        match = re.search(re.escape(kw) + r'\s+([A-Z0-9\s\.\,\-\']{5,100})(?:\s+UL\.\s*|\s+FAKTURA\s+|\s+BENF\s+|\s+\d{2,26})', full_desc_clean)
+        if match:
+            # Bierzemy całą frazę dopasowaną, a następnie ją czyścimy
+            potential_name = match.group(1).strip()
+            
+            # Usuwamy końcowe słowa, które są zbyt ogólne, ale tylko jeśli nazwa jest długa
+            if len(potential_name.split(' ')) > 2:
+                potential_name = re.sub(r'\s+(SPOLKA Z OGRA|SP\. Z O\.O\.|CONSULTING|PJMK\.WORLD)$', '', potential_name).strip()
+            
+            # Bierzemy pierwsze 3 słowa, ale nie więcej niż 30 znaków
+            extracted_name = " ".join(potential_name.split(' ')[:3])[:30]
+            break
+            
+    if extracted_name:
+        add_segment("32", extracted_name)
+    
     # 4. Pełen, CZYSTY opis transakcji (Segment 00)
     add_segment("00", full_desc_clean)
         
@@ -242,7 +270,9 @@ def remove_trailing_86(mt940_text):
             result.append(line)
         elif line.startswith(':86:'):
             if valid_transaction:
-                result.append(line)
+                # Omijamy puste segmenty, które powstały z kodu transakcji
+                if len(line.strip()) > 5:
+                    result.append(line)
             else:
                 if any(h in line for h in HEADERS_BREAK):
                     logging.warning("Pomijam linię :86: w nagłówku.")
