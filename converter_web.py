@@ -181,16 +181,20 @@ def pekao_parser(text):
     i = 0
     while i < len(lines):
         line = lines[i].strip()
-        # Nowy regex pod Twój wyciąg!
-        m_a = re.match(r'^(\d{8})\s+([\-]?\d{1,3}(?:[\.,]\d{3})*[\.,]\d{2})\s+(.+)$', line)
+        m_a = re.match(r'^(\d{2}/\d{2}/\d{4})\s+([\-]?\d{1,3}(?:[\.,]\d{3})*[\.,]\d{2})\s+(.*)$', line)
         if m_a:
             dt_raw = m_a.group(1)
             amt_raw = m_a.group(2)
-            desc = m_a.group(3)
-            dt = datetime.strptime(dt_raw, "%d%m%Y").strftime("%y%m%d")
+            desc_lines = [m_a.group(3)]
+            j = i + 1
+            while j < len(lines) and not re.match(r'^\d{2}/\d{2}/\d{4}', lines[j].strip()) and lines[j].strip():
+                desc_lines.append(lines[j].strip())
+                j += 1
+            desc = " ".join(desc_lines).strip()
+            dt = datetime.strptime(dt_raw, "%d/%m/%Y").strftime("%y%m%d")
             amt = clean_amount(amt_raw)
-            transactions.append((dt, amt, desc.strip()))
-            i += 1
+            transactions.append((dt, amt, desc))
+            i = j
             continue
         i += 1
     transactions.sort(key=lambda x: x[0])
