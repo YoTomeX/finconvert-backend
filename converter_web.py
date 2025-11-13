@@ -16,7 +16,7 @@ except Exception:
 HEADERS_BREAK = (':20:', ':25:', ':28C:', ':60F:', ':62F:', ':64:', '-')
 
 def parse_pdf_text(pdf_path):
-    """Otwiera i wyodrębnia cały tekst z pliku PDF."""
+    """Otwiera i wyodtrębnia cały tekst z pliku PDF."""
     try:
         with pdfplumber.open(pdf_path) as pdf:
             # Używamy .extract_text() z każdej strony i łączymy w jeden string
@@ -135,8 +135,9 @@ def map_transaction_code(desc):
     desc_clean = remove_diacritics(desc)
     desc_upper = desc_clean.upper()
     
-    # Priorytet dla ZUS/KRUS
+    # Priorytet dla ZUS/KRUS/VAT
     if 'ZUS' in desc_upper or 'KRUS' in desc_upper: return 'N562'
+    if 'VAT' in desc_upper or 'JPK' in desc_upper: return 'N562' # Używamy tego samego kodu dla przelewów podatkowych
     if 'PRZELEW PODZIELONY' in desc_upper: return 'N641'
     if 'PRZELEW KRAJOWY' in desc_upper or 'PRZELEW MIEDZYBANKOWY' in desc_upper or 'PRZELEW EXPRESS ELIXIR' in desc_upper: return 'N240'
     if 'OBCIAZENIE RACHUNKU' in desc_upper: return 'N495'
@@ -205,25 +206,29 @@ def segment_description(desc, code):
     # B. EKSTRAKCJA TAGÓW
     
     # 1. Numer referencyjny klienta / Faktura (Pole 20) - Najważniejszy!
-    # Używamy bardziej elastycznych regexów, by wyłapać numery nawet bez "NR REF.:"
+    ref_match = None
     
-    # Próba A: Jawny "FAKTURA", "NR REF.:"
-    ref_match_explicit = re.search(
+    # Próba A: Jawny "FAKTURA", "NR REF.:" lub "F/"
+    ref_match = re.search(
         r'(?:NR REF\.\s*:\s*|FAKTURA NR\s*:\s*|FAKTURA\s+)([A-Z0-9\/\-\.\:]{5,35})(?:\s+|$)', 
         full_desc_clean, re.I
     )
-    if ref_match_explicit:
-        add_segment("20", ref_match_explicit.group(1))
+    # Próba A.1: FAKTURA w formacie F/20530747/09/25 (P4)
+    if not ref_match:
+        ref_match = re.search(r'(F\/[A-Z0-9\/\-]+)', full_desc_clean, re.I)
+        
+    if ref_match:
+        add_segment("20", ref_match.group(1).replace('FAKTURA', '').strip())
     else:
         # Próba B: Numer REFERENCYJNY transakcji (długi ciąg cyfr, często na końcu)
-        # Przykład: 1540901989851416 (często 16 cyfr lub dłuższy unikalny ciąg)
-        ref_match_implicit = re.search(
-            r'([A-Z]?\d{10,25}[A-Z]?)', 
-            full_desc_clean.split(' ')[-1], # Szukaj na samym końcu opisu
+        # Szukamy ciągu alfanumerycznego z numeru referencyjnego (SACC...)
+        ref_match_sacc = re.search(
+            r'SACC\s+\d{8,12}\s+([A-Z]?\d{10,25}[A-Z]?)', 
+            full_desc_clean, 
             re.I
         )
-        if ref_match_implicit:
-             add_segment("20", ref_match_implicit.group(1))
+        if ref_match_sacc:
+            add_segment("20", ref_match_sacc.group(1))
 
     # 2. IBAN (Pole 38 - beneficjent)
     ibans = re.findall(r'(PL\d{26})', full_desc_clean)
@@ -231,25 +236,67 @@ def segment_description(desc, code):
         add_segment("38", iban)
         
     # 3. Nazwa strony (Pole 32 - Nadawca/Odbiorca)
-    # Lista słów kluczowych oznaczających, że następuje nazwa
-    name_keywords = ['PRZELEW KRAJOWY MIEDZYBANKOWY', 'PRZELEW EXPRESS ELIXIR', 'PRZELEW JAN MIZERSKI', 'PRZELEW INTERNET M/B', 'PRZELEW MIEDZYBANKOWY BETA/INTEGRA', 'PRZELEW PODZIELONY DO ZUS/KRUS', 'ANALITYCS QAL SERVICE SPOLKA Z OGRA', 'P4 SP. Z O.O.', 'ANNA PALUSINSKA', 'ANITA MARTYNA SERWIN', 'BARTOSZ SEKIEWICZ CONSULTING', 'PIOTR KOWALSKI PJMK.WORLD']
-    
     extracted_name = ""
-    for kw in name_keywords:
-        # Szukamy nazwy, która występuje po słowie kluczowym, a przed adresem lub innym tagiem
-        match = re.search(re.escape(kw) + r'\s+([A-Z0-9\s\.\,\-\']{5,100})(?:\s+UL\.\s*|\s+FAKTURA\s+|\s+BENF\s+|\s+\d{2,26})', full_desc_clean)
-        if match:
-            # Bierzemy całą frazę dopasowaną, a następnie ją czyścimy
-            potential_name = match.group(1).strip()
+    
+    # NOWA LOGIKA DLA ZUS/KRUS/VAT
+    if 'ZUS' in full_desc_clean or 'KRUS' in full_desc_clean:
+         extracted_name = 'ZUS' if 'ZUS' in full_desc_clean else 'KRUS'
+         period_match = re.search(r'(ZUS|KRUS)\s*(\d{2}M\d{2})', full_desc_clean)
+         if period_match:
+             extracted_name = f"{extracted_name} {period_match.group(2)}"
+    
+    elif 'VAT' in full_desc_clean or 'JPK' in full_desc_clean:
+        extracted_name = 'VAT/JPK'
+        vat_type_match = re.search(r'(VAT[\-\dUE]{1,5})', full_desc_clean)
+        if vat_type_match:
+            extracted_name = vat_type_match.group(1)
             
-            # Usuwamy końcowe słowa, które są zbyt ogólne, ale tylko jeśli nazwa jest długa
-            if len(potential_name.split(' ')) > 2:
-                potential_name = re.sub(r'\s+(SPOLKA Z OGRA|SP\. Z O\.O\.|CONSULTING|PJMK\.WORLD)$', '', potential_name).strip()
+        decl_match = re.search(r'([A-Z\-]+)?\s*(\d{1,4}[/\\\-]\d{2,4})', full_desc_clean)
+        if decl_match:
+            extracted_name = f"{extracted_name} {decl_match.group(2)}"
             
-            # Bierzemy pierwsze 3 słowa, ale nie więcej niż 30 znaków
-            extracted_name = " ".join(potential_name.split(' ')[:3])[:30]
-            break
+        if len(extracted_name) > 30:
+            extracted_name = 'VAT'
+
+    if not extracted_name:
+        # LOGIKA OGÓLNA DLA NAZW KONTRAHENTÓW
+        name_keywords_start = ['PRZELEW KRAJOWY MIEDZYBANKOWY', 'PRZELEW EXPRESS ELIXIR', 'PRZELEW INTERNET M/B', 'PRZELEW MIEDZYBANKOWY BETA/INTEGRA']
+        
+        for kw in name_keywords_start:
+            # Szukamy nazwy, która występuje po słowie kluczowym. 
+            # Używamy lookahead, aby upewnić się, że nie weźmiemy adresu (UL, M, PL, długi ciąg cyfr/ukośników)
+            match = re.search(
+                re.escape(kw) + 
+                r'\s+(?P<name>[A-Z0-9\s\.\,\-\'\(\)]{5,100}?)' + # Nazwa kontrahenta (grupa 'name')
+                r'(?=\s+UL\.\s*|\s+M\.\s*|\s+PL\.\s*|\s+FAKTURA\s+|\s+BENF\s+|\s+\d{2,26})', # Lookahead: zatrzymaj się przed adresem/kodem
+                full_desc_clean
+            )
             
+            if match:
+                potential_name = match.group('name').strip()
+                
+                # Użyjemy do 30 znaków, ale preferujemy całą nazwę jeśli jest sensowna
+                if len(potential_name) > 30:
+                     # Próba zachowania pełnej nazwy: JAN MIZERSKI RENEWABLES (30 znaków)
+                     if 'RENEWABLES' in potential_name and len('JAN MIZERSKI RENEWABLES') <= 30:
+                         extracted_name = 'JAN MIZERSKI RENEWABLES'
+                     else:
+                         extracted_name = " ".join(potential_name.split(' ')[:4])[:30].strip() # Maksymalnie 4 słowa
+                else:
+                    extracted_name = potential_name
+                
+                # Dodatkowe czyszczenie końcówek
+                extracted_name = re.sub(r'\s+(SPOLKA Z OGRA|SP\. Z O\.O\.|CONSULTING|PJMK\.WORLD)$', '', extracted_name).strip()
+                
+                break
+                
+        # DODATKOWA WERYFIKACJA dla bardzo specyficznych przypadków, które mogą być źle parsowane
+        if not extracted_name:
+            if 'JAN MIZERSKI RENEWABLES' in full_desc_clean:
+                extracted_name = 'JAN MIZERSKI RENEWABLES'
+            elif 'P4 SP. Z O.O.' in full_desc_clean:
+                extracted_name = 'P4 SP. Z O.O.'
+        
     if extracted_name:
         add_segment("32", extracted_name)
     
@@ -399,7 +446,7 @@ def build_mt940(account, saldo_pocz, saldo_konc, transactions, num_20="1", num_2
     cd60 = 'D' if saldo_pocz.startswith('-') else 'C'
     amt60 = pad_amount(saldo_pocz.lstrip('-'))
     
-    # Saldo końcowe :62F: i :64:
+    # Saldo końcowe :62F:
     cd62 = 'D' if saldo_konc.startswith('-') else 'C'
     amt62 = pad_amount(saldo_konc.lstrip('-'))
     
