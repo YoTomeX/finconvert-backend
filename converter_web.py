@@ -198,20 +198,16 @@ def build_86_line(code_numeric, segments_dict):
 # ---------------------------
 
 def deduplicate_transactions(transactions):
-    """
-    Usuwa zduplikowane transakcje po polu :61:
-    (niektóre banki powtarzają linie gdy opis jest długi).
-    """
     seen = set()
-    result = []
-
-    for tx in transactions:
-        key = tx.get("61", "")  # unikalność po linii :61:
+    out = []
+    for t in transactions:
+        # t to tuple: (date, amt, desc)
+        # Unikalność możesz zrobić po pierwszych 3 polach (np. daty i opis do 50 znaków)
+        key = (t[0], t[1], t[2][:50])
         if key not in seen:
             seen.add(key)
-            result.append(tx)
-
-    return result
+            out.append(t)
+    return out
 
 
 def pekao_parser(text):
