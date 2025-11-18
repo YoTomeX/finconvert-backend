@@ -272,6 +272,32 @@ def clean_amount(amount):
     val = normalize_amount_for_calc(s)
     # string with comma
     return "{:.2f}".format(val).replace('.', ',')
+    
+    
+def remove_trailing_86(mt940_text):
+    """
+    Zachowuje strukturę, ale jeśli występują :86: niepowiązane z :61:, usuwa je.
+    """
+    lines = mt940_text.strip().split('\n')
+    result = []
+    valid_transaction = False
+    for line in lines:
+        if line.startswith(':61:'):
+            valid_transaction = True
+            result.append(line)
+        elif line.startswith(':86:'):
+            if valid_transaction:
+                result.append(line)
+            else:
+                # pomijamy samotne :86:
+                logging.debug("Pomijam niepowiązane :86: -> %s", line[:80])
+        elif any(line.startswith(h) for h in HEADERS_BREAK):
+            valid_transaction = False
+            result.append(line)
+        else:
+            result.append(line)
+    return "\r\n".join(result) + "\r\n"
+
 
 # ---------------------------
 # Build MT940 (final)
