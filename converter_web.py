@@ -359,11 +359,11 @@ def build_mt940(account, saldo_pocz, saldo_konc, transactions, num_20="1", num_2
 
 def save_mt940_file(mt940_text, output_path):
     try:
-        with open(output_path, "w", encoding="windows-1250", newline="\r\n") as f:
+        with open(output_path, "w", encoding="windows-1250", newline="") as f:
             f.write(mt940_text)
     except Exception as e:
         logging.error(f"Błąd zapisu w Windows-1250: {e}. Zapisuję w UTF-8.")
-        with open(output_path, "w", encoding="utf-8", newline="\r\n") as f:
+        with open(output_path, "w", encoding="utf-8", newline="") as f:
             f.write(mt940_text)
 
 # ---------------------------
