@@ -197,6 +197,23 @@ def build_86_line(code_numeric, segments_dict):
 # Parsowanie PDF -> transakcje (przykład Pekao-like)
 # ---------------------------
 
+def deduplicate_transactions(transactions):
+    """
+    Usuwa zduplikowane transakcje po polu :61:
+    (niektóre banki powtarzają linie gdy opis jest długi).
+    """
+    seen = set()
+    result = []
+
+    for tx in transactions:
+        key = tx.get("61", "")  # unikalność po linii :61:
+        if key not in seen:
+            seen.add(key)
+            result.append(tx)
+
+    return result
+
+
 def pekao_parser(text):
     """
     Parsuje tekst z PDF (przykładowo dla układu Pekao).
