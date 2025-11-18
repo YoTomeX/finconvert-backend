@@ -296,7 +296,7 @@ def remove_trailing_86(mt940_text):
             result.append(line)
         else:
             result.append(line)
-    return "\r\n".join(result) + "\r\n"
+    return "\r\n".join(result)
 
 
 # ---------------------------
