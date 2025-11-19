@@ -232,6 +232,7 @@ def pekao_parser(text: str) -> tuple[str, str, str, list[tuple], str, str]:
         i += 1
     transactions.sort(key=lambda x: x[0])
     transactions = deduplicate_transactions(transactions)
+    num_20, num_28C = extract_mt940_headers(transactions, text)
     return account, saldo_pocz, saldo_konc, transactions, num_20, num_28C
     
 def santander_parser(text: str):
@@ -280,6 +281,7 @@ def santander_parser(text: str):
         saldo_konc = transactions[-1][1]
 
     transactions = deduplicate_transactions(transactions)
+    num_20, num_28C = extract_mt940_headers(transactions, text)
     return account, saldo_pocz, saldo_konc, transactions, num_20, num_28C
 
 
