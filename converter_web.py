@@ -142,6 +142,29 @@ def extract_86_fields(desc):
     fields.append(('/40', main_type))
     # inne specyficzne pola by można dodać wg układu konkretnego banku (np. /RF, /32 jeśli potrzeba/występuje w oryginale)
     return fields
+    
+def format_mt940_amount(s: str) -> str:
+    s = str(s).replace(' ', '').replace('.', '').replace(',', '.')
+    try:
+        val = float(s)
+    except Exception:
+        val = 0.0
+    normalized = f"{abs(val):.2f}"
+    integer, frac = normalized.split('.')
+    integer_padded = integer.zfill(12)
+    return f"{integer_padded},{frac}"
+
+    
+def build_86_segments(description: str, ref: str, gvc: str) -> list[str]:
+    core = extract_core_title_info(description)  # uproszczony opis: typ + kontrahent + faktura
+    desc_main = truncate_description(core)
+    segs = [f":86:/00{desc_main}"]
+    if ref:
+        segs.append(f":86:/20{ref}")
+    if gvc:
+        segs.append(f":86:/40N{gvc}")
+    return segs
+
 
 def pekao_parser(text):
     account = ""
