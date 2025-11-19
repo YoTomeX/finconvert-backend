@@ -117,10 +117,23 @@ def clean_amount(amount) -> str:
     val = normalize_amount_for_calc(s)
     return "{:.2f}".format(val).replace('.', ',')
 
-def extract_mt940_headers(text: str) -> tuple[str, str]:
-    """Wydobywa nagłówki wyciągu MT940 (numery)."""
-    num_20 = datetime.now().strftime('%y%m%d%H%M%S')
+def extract_mt940_headers(transactions: list, text: str) -> tuple[str, str]:
+    """
+    Pobiera numer wyciągu z daty pierwszej transakcji (nie z bieżącej daty).
+    Numery:
+        - num_20 = YYMMDDHHMMSS (data pierwszej transakcji + czas jako unikalny numer wyciągu)
+        - num_28C z wyciągu lub numer strony (jak poprzednio)
+    """
+    # Data z pierwszej znalezionej transakcji
+    if transactions and transactions[0][0]:
+        # format MT940: YYMMDD, dodaj bieżący czas dla unikalności
+        num_20 = transactions[0][0] + datetime.now().strftime('%H%M%S')
+    else:
+        # fallback, jeżeli transakcji brak
+        num_20 = datetime.now().strftime('%y%m%d%H%M%S')
+
     num_28C = '00001'
+    # wyciagaj z tekstu jak w Twoim kodzie:
     m28c = re.search(r'(Numer wyciągu|Nr wyciągu|Wyciąg nr|Wyciąg nr\.\s+)\s*[:\-]?\s*(\d{1,6})', text, re.I)
     if m28c:
         num_28C = m28c.group(2).zfill(5)
@@ -128,7 +141,9 @@ def extract_mt940_headers(text: str) -> tuple[str, str]:
         page_match = re.search(r'Strona\s*(\d+)/\d+', text)
         if page_match:
             num_28C = page_match.group(1).zfill(5)
+
     return num_20, num_28C
+
 
 def deduplicate_transactions(transactions: list[tuple]) -> list[tuple]:
     """Usuwa powtarzające się transakcje na podstawie (data, kwota, fragment opisu)."""
