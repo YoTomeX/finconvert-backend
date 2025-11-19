@@ -218,6 +218,55 @@ def pekao_parser(text: str) -> tuple[str, str, str, list[tuple], str, str]:
     transactions.sort(key=lambda x: x[0])
     transactions = deduplicate_transactions(transactions)
     return account, saldo_pocz, saldo_konc, transactions, num_20, num_28C
+    
+def santander_parser(text: str):
+    account = ""
+    saldo_pocz = "0,00"
+    saldo_konc = "0,00"
+    transactions = []
+    num_20, num_28C = extract_mt940_headers(text)
+
+    # numer rachunku
+    acc = re.search(r'(PL\d{26})', text.replace(" ", ""))
+    if acc:
+        account = acc.group(1)
+
+    lines = text.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+
+        # dopasowanie daty i kwoty
+        m = re.match(r'^Data operacji (\d{2}\.\d{2}\.\d{4}).*?([\-]?\d+[.,]\d{2})\s*PLN', line)
+        if m:
+            dt_raw = m.group(1)
+            amt_raw = m.group(2)
+            desc_lines = [line]
+
+            j = i + 1
+            while j < len(lines) and not lines[j].strip().startswith("Data operacji") and lines[j].strip():
+                desc_lines.append(lines[j].strip())
+                j += 1
+
+            desc = " ".join(desc_lines).strip()
+            try:
+                dt = datetime.strptime(dt_raw, "%d.%m.%Y").strftime("%y%m%d")
+            except Exception:
+                dt = datetime.now().strftime("%y%m%d")
+
+            amt = clean_amount(amt_raw)
+            transactions.append((dt, amt, desc))
+            i = j
+            continue
+        i += 1
+
+    if transactions:
+        saldo_pocz = transactions[0][1]
+        saldo_konc = transactions[-1][1]
+
+    transactions = deduplicate_transactions(transactions)
+    return account, saldo_pocz, saldo_konc, transactions, num_20, num_28C
+
 
 def remove_trailing_86(mt940_text: str) -> str:
     """Usuwa niepowiązane linie :86: między sekcjami w MT940."""
@@ -338,10 +387,10 @@ def detect_bank(text: str) -> str:
     return "Nieznany"
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Konwerter PDF do MT940 (zgodny z Pekao/Symfonia)")
+    parser = argparse.ArgumentParser(description="Konwerter PDF do MT940")
     parser.add_argument("input_pdf", help="Ścieżka do pliku wejściowego PDF.")
     parser.add_argument("output_mt940", help="Ścieżka do pliku wyjściowego MT940.")
-    parser.add_argument("--debug", action="store_true", help="Włącz tryb debugowania (wypis tekstu PDF oraz testowe MT940).")
+    parser.add_argument("--debug", action="store_true", help="Tryb debugowania")
     args = parser.parse_args()
     if args.debug:
         logging.getLogger().setLevel(logging.DEBUG)
@@ -355,7 +404,19 @@ def main() -> None:
         print(text[:4000])
         print(f"\n>>> Wykryty bank: {bank_name}\n")
         print("============================\n")
-    account, sp, sk, tx, num_20, num_28C = pekao_parser(text)
+
+    # Dynamiczne dopasowanie parsera bankowego:
+    parser_map = {
+        "Pekao": pekao_parser,
+        "Santander": santander_parser,
+        # Dodasz kolejne parsery tutaj
+    }
+    if bank_name in parser_map:
+        account, sp, sk, tx, num_20, num_28C = parser_map[bank_name](text)
+    else:
+        logging.error(f"Bank {bank_name} nieobsługiwany lub nierozpoznany.")
+        sys.exit(3)
+
     print(f"\nLICZBA TRANSAKCJI ZNALEZIONYCH: {len(tx)}\n")
     print(f"Wykryty bank: {bank_name}\n")
     mt940 = build_mt940(account, sp, sk, tx, num_20, num_28C)
@@ -364,7 +425,8 @@ def main() -> None:
         print("\n".join(mt940.splitlines()[:30]))
         print("============================\n")
     save_mt940_file(mt940, args.output_mt940)
-    print("✅ Konwersja zakończona! Plik zapisany jako %s (kodowanie WINDOWS-1250/UTF-8, separator CRLF)." % args.output_mt940)
+    print(f"✅ Konwersja zakończona! Plik zapisany jako {args.output_mt940} (kodowanie WINDOWS-1250/UTF-8, separator CRLF).")
+
 
 if __name__ == "__main__":
     try:
