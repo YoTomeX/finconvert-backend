@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-import sys, re, io, traceback, unicodedata, logging, argparse
+import sys
+import re
+import io
+import traceback
+import unicodedata
+import logging
+import argparse
 from datetime import datetime
 import pdfplumber
 
@@ -7,7 +13,8 @@ logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
 HEADERS_BREAK = (':20:', ':25:', ':28C:', ':60F:', ':62F:', ':64:', '-')
 
-def parse_pdf_text(pdf_path):
+def parse_pdf_text(pdf_path: str) -> str:
+    """Ekstrakcja tekstu z PDF (wszystkie strony jako pojedynczy tekst)."""
     try:
         with pdfplumber.open(pdf_path) as pdf:
             return "\n".join((page.extract_text() or "") for page in pdf.pages)
@@ -15,7 +22,8 @@ def parse_pdf_text(pdf_path):
         logging.error(f"Błąd otwierania lub parsowania PDF: {e}")
         return ""
 
-def remove_diacritics(text):
+def remove_diacritics(text: str) -> str:
+    """Usuwa polskie znaki diakrytyczne i normalizuje do wielkich liter."""
     if not text:
         return ""
     nkfd = unicodedata.normalize('NFKD', text)
@@ -25,7 +33,8 @@ def remove_diacritics(text):
     cleaned = re.sub(r'\s+', ' ', cleaned).strip()
     return cleaned.upper()
 
-def normalize_amount_for_calc(s):
+def normalize_amount_for_calc(s) -> float:
+    """Konwersja formatu kwoty na float, uwzględniając różne notacje."""
     if s is None:
         return 0.0
     ss = str(s).strip()
@@ -52,7 +61,8 @@ def normalize_amount_for_calc(s):
         val = 0.0
     return -val if neg else val
 
-def format_amount_12(amount):
+def format_amount_12(amount) -> str:
+    """Formatowanie kwoty w stylu MT940 jako 12-cyfrowa wartość z przecinkiem."""
     if isinstance(amount, str):
         val = normalize_amount_for_calc(amount)
     else:
@@ -66,7 +76,8 @@ def format_amount_12(amount):
     integer_padded = integer.zfill(12)
     return f"{integer_padded},{frac}"
 
-def format_account_for_25(acc_raw):
+def format_account_for_25(acc_raw) -> str:
+    """Formatowanie numeru konta zgodnie z MT940."""
     if not acc_raw:
         return "/PL00000000000000000000000000"
     acc = re.sub(r'[^A-Za-z0-9]', '', str(acc_raw)).upper()
@@ -78,7 +89,8 @@ def format_account_for_25(acc_raw):
         return acc
     return f"/{acc}"
 
-def map_transaction_code(desc):
+def map_transaction_code(desc: str) -> str:
+    """Mapuje opis transakcji na kod GVC zgodny z Symfonią/MT940."""
     if not desc:
         return 'NTRF'
     desc_clean = remove_diacritics(desc)
@@ -98,13 +110,15 @@ def map_transaction_code(desc):
         return 'N027'
     return 'NTRF'
 
-def clean_amount(amount):
+def clean_amount(amount) -> str:
+    """Normalizuje i czyści format kwoty na standard MT940 (np. -123,45)."""
     s = str(amount).replace('\xa0', '').strip()
     s = re.sub(r'\s+', '', s)
     val = normalize_amount_for_calc(s)
     return "{:.2f}".format(val).replace('.', ',')
 
-def extract_mt940_headers(text):
+def extract_mt940_headers(text: str) -> tuple[str, str]:
+    """Wydobywa nagłówki wyciągu MT940 (numery)."""
     num_20 = datetime.now().strftime('%y%m%d%H%M%S')
     num_28C = '00001'
     m28c = re.search(r'(Numer wyciągu|Nr wyciągu|Wyciąg nr|Wyciąg nr\.\s+)\s*[:\-]?\s*(\d{1,6})', text, re.I)
@@ -116,7 +130,8 @@ def extract_mt940_headers(text):
             num_28C = page_match.group(1).zfill(5)
     return num_20, num_28C
 
-def deduplicate_transactions(transactions):
+def deduplicate_transactions(transactions: list[tuple]) -> list[tuple]:
+    """Usuwa powtarzające się transakcje na podstawie (data, kwota, fragment opisu)."""
     seen = set()
     out = []
     for t in transactions:
@@ -126,37 +141,32 @@ def deduplicate_transactions(transactions):
             out.append(t)
     return out
 
-def extract_86_fields(desc):
-    """Rozdziela opis na fragmenty do linii /00, /20, /40 + opcjonalnie inne."""
-    fields = []
-    desc_up = remove_diacritics(desc)
-    # główny opis
-    if desc_up:
-        fields.append(('/00', desc_up[:256]))
-    # referencja/faktura
-    ref = re.search(r'(NR REF\.?\s*[:\s]*([A-Z0-9\-\/\.]+))', desc_up)
-    if ref:
-        fields.append(('/20', ref.group(2)[:35]))
-    # opcjonalne pole /40 (np. typ transakcji, jeśli występuje)
-    main_type = map_transaction_code(desc)
-    fields.append(('/40', main_type))
-    # inne specyficzne pola by można dodać wg układu konkretnego banku (np. /RF, /32 jeśli potrzeba/występuje w oryginale)
-    return fields
-    
-def format_mt940_amount(s: str) -> str:
-    s = str(s).replace(' ', '').replace('.', '').replace(',', '.')
-    try:
-        val = float(s)
-    except Exception:
-        val = 0.0
-    normalized = f"{abs(val):.2f}"
-    integer, frac = normalized.split('.')
-    integer_padded = integer.zfill(12)
-    return f"{integer_padded},{frac}"
+def extract_invoice_number(text: str) -> str:
+    """Ekstrakcja numeru faktury z opisu transakcji."""
+    patterns = [
+        r'\b\d{2}-[A-Z]{3}/\d{2}/\d{4}\b',   # np. 25-FVS/09/0005
+        r'\bF/\d{8}/\d{2}/\d{2}\b',          # np. F/20530747/09/25
+        r'\bFAKTURA\s+NR[:\s]*([A-Za-z0-9/-]+)',
+        r'\bFAKTURA\s+SACC\s+([A-Za-z0-9]+)',
+        r'\bFAKTURA\s+([A-Za-z0-9/-]+)',
+    ]
+    for p in patterns:
+        m = re.search(p, text, re.IGNORECASE)
+        if m:
+            return m.group(1) if m.lastindex else m.group(0)
+    return ""
 
-    
+def extract_core_title_info(description: str) -> str:
+    """Uproszczony opis: typ + kontrahent + faktura, na razie całość tekstu."""
+    return description
+
+def truncate_description(text: str, maxlen: int = 200) -> str:
+    """Ucina tekst do maxlen znaków."""
+    return text[:maxlen]
+
 def build_86_segments(description: str, ref: str, gvc: str) -> list[str]:
-    core = extract_core_title_info(description)  # uproszczony opis: typ + kontrahent + faktura
+    """Buduje segmenty :86: dla MT940 (opis transakcji na kilka linii/pól)."""
+    core = extract_core_title_info(description)
     desc_main = truncate_description(core)
     segs = [f":86:/00{desc_main}"]
     if ref:
@@ -165,8 +175,8 @@ def build_86_segments(description: str, ref: str, gvc: str) -> list[str]:
         segs.append(f":86:/40N{gvc}")
     return segs
 
-
-def pekao_parser(text):
+def pekao_parser(text: str) -> tuple[str, str, str, list[tuple], str, str]:
+    """Parser wyciągu Pekao do danych wejściowych (konto, saldo, transakcje, nagłówki)."""
     account = ""
     saldo_pocz = "0,00"
     saldo_konc = "0,00"
@@ -209,7 +219,8 @@ def pekao_parser(text):
     transactions = deduplicate_transactions(transactions)
     return account, saldo_pocz, saldo_konc, transactions, num_20, num_28C
 
-def remove_trailing_86(mt940_text):
+def remove_trailing_86(mt940_text: str) -> str:
+    """Usuwa niepowiązane linie :86: między sekcjami w MT940."""
     lines = mt940_text.strip().split('\n')
     result = []
     valid_transaction = False
@@ -230,9 +241,7 @@ def remove_trailing_86(mt940_text):
     return "\r\n".join(result)
 
 def format_mt940_amount(s: str) -> str:
-    """
-    Zamienia kwotę na format MT940: bez separatorów tysięcy, przecinek jako separator dziesiętny.
-    """
+    """Zamienia kwotę na format MT940: bez separatorów tysięcy, przecinek jako separator dziesiętny."""
     s = str(s).replace(' ', '').replace('.', '').replace(',', '.')
     try:
         val = float(s)
@@ -243,17 +252,16 @@ def format_mt940_amount(s: str) -> str:
     integer_padded = integer.zfill(12)  # zgodnie z MT940: 12 cyfr
     return f"{integer_padded},{frac}"
 
-
 def build_mt940(account: str, saldo_poczatkowe: str, saldo_koncowe: str,
                 transactions: list[tuple], num_20: str, num_28C: str) -> str:
     """
-    transactions: lista krotek (date, amount, desc) zwracana przez pekao_parser
+    Buduje cały wyciąg MT940 jako tekst na podstawie danych wejściowych.
     """
-    lines = []
-    lines.append(f":20:{num_20}")
-    lines.append(f":25:/{account}")
-    lines.append(f":28C:{num_28C}")
-
+    lines = [
+        f":20:{num_20}",
+        f":25:/{account}",
+        f":28C:{num_28C}"
+    ]
     # fallback gdy brak transakcji
     if not transactions:
         today = datetime.today().strftime("%y%m%d")
@@ -287,8 +295,8 @@ def build_mt940(account: str, saldo_poczatkowe: str, saldo_koncowe: str,
 
     return "\r\n".join(lines)
 
-
-def save_mt940_file(mt940_text, output_path):
+def save_mt940_file(mt940_text: str, output_path: str) -> None:
+    """Zapisuje wyciąg MT940 do pliku z kodowaniem windows-1250 lub fallbackiem utf-8."""
     try:
         with open(output_path, "w", encoding="windows-1250", newline="") as f:
             f.write(mt940_text)
@@ -297,26 +305,39 @@ def save_mt940_file(mt940_text, output_path):
         with open(output_path, "w", encoding="utf-8", newline="") as f:
             f.write(mt940_text)
 
-def detect_bank(text):
+def detect_bank(text: str) -> str:
+    """Wykrywa bank na podstawie tekstu wyciągu/PDF."""
     text_up = text.upper()
-    if "PEKAO" in text_up or "BANK POLSKA KASA OPIEKI" in text_up: return "Pekao"
-    if "MBANK" in text_up or "BRE BANK" in text_up: return "mBank"
-    if "SANTANDER" in text_up or "BZWBK" in text_up: return "Santander"
-    if "PKO BP" in text_up or "POWSZECHNA KASA OSZCZEDNOSCI" in text_up: return "PKO BP"
-    if "ING BANK" in text_up or "ING" in text_up: return "ING"
-    if "ALIOR" in text_up: return "Alior"
+    if "PEKAO" in text_up or "BANK POLSKA KASA OPIEKI" in text_up:
+        return "Pekao"
+    if "MBANK" in text_up or "BRE BANK" in text_up:
+        return "mBank"
+    if "SANTANDER" in text_up or "BZWBK" in text_up:
+        return "Santander"
+    if "PKO BP" in text_up or "POWSZECHNA KASA OSZCZEDNOSCI" in text_up:
+        return "PKO BP"
+    if "ING BANK" in text_up or "ING" in text_up:
+        return "ING"
+    if "ALIOR" in text_up:
+        return "Alior"
     iban_match = re.search(r'PL(\d{2})(\d{4})\d{20}', text.replace(' ', ''))
     if iban_match:
         bank_code = iban_match.group(2)
-        if bank_code == "1240": return "Pekao"
-        if bank_code == "1140": return "mBank"
-        if bank_code == "1090": return "Santander"
-        if bank_code == "1020": return "PKO BP"
-        if bank_code == "1050": return "ING"
-        if bank_code == "2490": return "Alior"
+        if bank_code == "1240":
+            return "Pekao"
+        if bank_code == "1140":
+            return "mBank"
+        if bank_code == "1090":
+            return "Santander"
+        if bank_code == "1020":
+            return "PKO BP"
+        if bank_code == "1050":
+            return "ING"
+        if bank_code == "2490":
+            return "Alior"
     return "Nieznany"
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="Konwerter PDF do MT940 (zgodny z Pekao/Symfonia)")
     parser.add_argument("input_pdf", help="Ścieżka do pliku wejściowego PDF.")
     parser.add_argument("output_mt940", help="Ścieżka do pliku wyjściowego MT940.")
