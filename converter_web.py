@@ -445,7 +445,8 @@ def main() -> None:
         statement_month = f"{month_names[parsed_date.month]} {parsed_date.year}"
     else:
         statement_month = "Nieznany"
-
+        
+    print(f"Miesiąc wyciągu: {statement_month}")
     print(f"\nLICZBA TRANSAKCJI ZNALEZIONYCH: {len(tx)}\n")
     print(f"Wykryty bank: {bank_name}\n")
     mt940 = build_mt940(account, sp, sk, tx, num_20, num_28C)
