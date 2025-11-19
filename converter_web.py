@@ -431,6 +431,20 @@ def main() -> None:
     else:
         logging.error(f"Bank {bank_name} nieobsługiwany lub nierozpoznany.")
         sys.exit(3)
+        
+    if tx:
+    first_tx_date = tx[0][0]
+    try:
+        parsed_date = datetime.strptime(first_tx_date, '%y%m%d')
+    except Exception:
+        parsed_date = datetime.now()
+    month_names = [
+        '', 'Styczeń', 'Luty', 'Marzec', 'Kwiecień', 'Maj', 'Czerwiec',
+        'Lipiec', 'Sierpień', 'Wrzesień', 'Październik', 'Listopad', 'Grudzień'
+    ]
+    statement_month = f"{month_names[parsed_date.month]} {parsed_date.year}"
+    else:
+        statement_month = "Nieznany"
 
     print(f"\nLICZBA TRANSAKCJI ZNALEZIONYCH: {len(tx)}\n")
     print(f"Wykryty bank: {bank_name}\n")
