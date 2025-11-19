@@ -196,7 +196,6 @@ def pekao_parser(text: str) -> tuple[str, str, str, list[tuple], str, str]:
     saldo_pocz = "0,00"
     saldo_konc = "0,00"
     transactions = []
-    num_20, num_28C = extract_mt940_headers(text)
     lines = text.splitlines()
     for line in lines:
         acc = re.search(r'(PL\d{2}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4})', line)
@@ -240,7 +239,6 @@ def santander_parser(text: str):
     saldo_pocz = "0,00"
     saldo_konc = "0,00"
     transactions = []
-    num_20, num_28C = extract_mt940_headers(text)
 
     # numer rachunku
     acc = re.search(r'(PL\d{26})', text.replace(" ", ""))
