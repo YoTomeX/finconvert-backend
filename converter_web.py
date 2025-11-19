@@ -434,15 +434,15 @@ def main() -> None:
         
     if tx:
         first_tx_date = tx[0][0]
-    try:
-        parsed_date = datetime.strptime(first_tx_date, '%y%m%d')
-    except Exception:
-        parsed_date = datetime.now()
-    month_names = [
-        '', 'Styczeń', 'Luty', 'Marzec', 'Kwiecień', 'Maj', 'Czerwiec',
-        'Lipiec', 'Sierpień', 'Wrzesień', 'Październik', 'Listopad', 'Grudzień'
-    ]
-    statement_month = f"{month_names[parsed_date.month]} {parsed_date.year}"
+        try:
+            parsed_date = datetime.strptime(first_tx_date, '%y%m%d')
+        except Exception:
+            parsed_date = datetime.now()
+        month_names = [
+            '', 'Styczeń', 'Luty', 'Marzec', 'Kwiecień', 'Maj', 'Czerwiec',
+            'Lipiec', 'Sierpień', 'Wrzesień', 'Październik', 'Listopad', 'Grudzień'
+        ]
+        statement_month = f"{month_names[parsed_date.month]} {parsed_date.year}"
     else:
         statement_month = "Nieznany"
 
