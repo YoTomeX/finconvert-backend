@@ -206,6 +206,21 @@ def remove_trailing_86(mt940_text):
             result.append(line)
     return "\r\n".join(result)
 
+def format_mt940_amount(s: str) -> str:
+    """
+    Zamienia kwotę na format MT940: bez separatorów tysięcy, przecinek jako separator dziesiętny.
+    """
+    s = str(s).replace(' ', '').replace('.', '').replace(',', '.')
+    try:
+        val = float(s)
+    except Exception:
+        val = 0.0
+    normalized = f"{abs(val):.2f}"
+    integer, frac = normalized.split('.')
+    integer_padded = integer.zfill(12)  # zgodnie z MT940: 12 cyfr
+    return f"{integer_padded},{frac}"
+
+
 def build_mt940(account: str, saldo_poczatkowe: str, saldo_koncowe: str,
                 transactions: list[tuple], num_20: str, num_28C: str) -> str:
     """
