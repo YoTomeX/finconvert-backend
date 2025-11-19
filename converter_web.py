@@ -433,7 +433,7 @@ def main() -> None:
         sys.exit(3)
         
     if tx:
-    first_tx_date = tx[0][0]
+        first_tx_date = tx[0][0]
     try:
         parsed_date = datetime.strptime(first_tx_date, '%y%m%d')
     except Exception:
