@@ -7,7 +7,7 @@ const fs         = require('fs');
 const cors       = require('cors');
 
 const app  = express();
-const port = process.env.PORT || 3000;
+const port = process.env.PORT;
 
 // Konfiguracja CORS - tylko jedna, solidna linia middleware!
 app.use(cors({
@@ -195,6 +195,11 @@ app.post('/convert', upload.single('file'), (req, res) => {
 });
 
 app.use(express.static(path.join(__dirname, 'public')));
+app.use((req, res, next) => {
+  console.log(`${req.method} ${req.url}`);
+  next();
+});
+
 app.use('/outputs', express.static(outputFolder));
 
 app.listen(port, () => {
