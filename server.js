@@ -101,42 +101,26 @@ app.post('/convert', upload.single('file'), (req, res) => {
     }
 
     let statementMonth = 'Nieznany';
-    const monthPatterns = [
-      /📅\s*Miesiąc wyciągu:\s*([^\n\r]+)/,
-      /Miesiąc:\s*([^\n\r]+)/,
-      /(\d{2})\.(\d{2})\.(\d{4})/,
-      /(\d{4})-(\d{2})-(\d{2})/,
-      /(\d{2})\/(\d{4})/,
-      /Za okres od \d{2}\/(\d{2})\/(\d{4})/
-    ];
-    for (const rx of monthPatterns) {
-      const m = stdoutData.match(rx);
-      if (m) {
-        if (rx === monthPatterns[0] || rx === monthPatterns[1]) {
-          statementMonth = m[1].trim();
-        } else if (rx === monthPatterns[2]) {
-          statementMonth = `${monthNamesPL[parseInt(m[2],10)-1]} ${m[3]}`;
-        } else if (rx === monthPatterns[3]) {
-          statementMonth = `${monthNamesPL[parseInt(m[2],10)-1]} ${m[1]}`;
-        } else if (rx === monthPatterns[4]) {
-          statementMonth = `${monthNamesPL[parseInt(m[1],10)-1]} ${m[2]}`;
-        } else if (rx === monthPatterns[5]) {
-          statementMonth = `${monthNamesPL[parseInt(m[1],10)-1]} ${m[2]}`;
-        }
-        break;
-      }
-    }
-    if (statementMonth === 'Nieznany') {
-      const base = path.basename(req.file.filename, path.extname(req.file.filename));
-      const d    = base.match(/^(\d{4})(\d{2})/);
-      if (d) {
-        const [ , yy, mmRaw ] = d;
-        const mm = parseInt(mmRaw,10);
-        if (mm >=1 && mm <=12) {
-          statementMonth = `${monthNamesPL[mm-1]} ${yy}`;
-        }
-      }
-    }
+	let statementMonth = 'Nieznany';
+
+	// Poluj TYLKO na: "Miesiąc wyciągu: XYZ"
+	const monthRegex = /Miesiąc wyciągu:\s*([^\n\r]+)/;
+	const m = stdoutData.match(monthRegex);
+	if (m) {
+		statementMonth = m[1].trim();
+	} else {
+		// Fallback: z nazwy pliku
+		const base = path.basename(req.file.filename, path.extname(req.file.filename));
+		const d    = base.match(/^(\d{4})(\d{2})/);
+		if (d) {
+			const [ , yy, mmRaw ] = d;
+			const mm = parseInt(mmRaw,10);
+			if (mm >=1 && mm <=12) {
+				statementMonth = `${monthNamesPL[mm-1]} ${yy}`;
+			}
+		}
+	}
+
 
     let statementBank = 'Nieznany';
     if (/PKOPPLPW|Pekao|Bank Polska Kasa Opieki/i.test(stdoutData)) {
