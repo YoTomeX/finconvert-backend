@@ -6,6 +6,7 @@ import traceback
 import unicodedata
 import logging
 import argparse
+import os
 from datetime import datetime
 import pdfplumber
 
@@ -71,6 +72,12 @@ def format_amount_12(amount) -> str:
     integer, frac = normalized.split('.')
     integer_padded = integer.zfill(12)
     return f"{integer_padded},{frac}"
+
+def format_mt940_amount(amount) -> str:
+    """Przygotuj kwotę do formatu MT940 (np. 100,00)"""
+    val = normalize_amount_for_calc(amount)
+    # W MT940 przecinek jako separator dziesiętny, kropka separator tysięcy
+    return "{:.2f}".format(val).replace('.', ',')
 
 def format_account_for_25(acc_raw) -> str:
     if not acc_raw:
@@ -222,7 +229,6 @@ def santander_parser(text: str):
     i = 0
     while i < len(lines):
         line = lines[i].strip()
-        # 1. Szukaj: Data operacji <tekst> <kwota> PLN <saldo> (data w linii niżej)
         m1 = re.match(r'^Data operacji (.+?) ([\-]?\d+[.,]\d{2}) PLN [\-]?\d+[.,]\d{2} PLN', line)
         if m1 and i+1 < len(lines):
             desc_main = m1.group(1).strip()
@@ -230,7 +236,6 @@ def santander_parser(text: str):
             date_line = lines[i+1].strip()
             m_date = re.match(r'^(\d{4})-(\d{2})-(\d{2})$', date_line)
             desc_extra = ""
-            # Pobierz dodatkowy opis jeśli występuje
             j = i+2
             while j < len(lines) and lines[j].strip() and not lines[j].startswith("Data operacji"):
                 desc_extra += " " + lines[j].strip()
@@ -247,7 +252,6 @@ def santander_parser(text: str):
             transactions.append((dt, amt, desc))
             i = j
             continue
-        # 2. Szukaj: Data operacji DD.MM.YYYY ... (data w tej samej linii)
         m2 = re.match(r'^Data operacji (\d{2}\.\d{2}\.\d{4}).*?([\-]?\d+[.,]\d{2})\s*PLN', line)
         if m2:
             dt_raw = m2.group(1)
@@ -276,7 +280,6 @@ def santander_parser(text: str):
     num_20, num_28C = extract_mt940_headers(transactions, text)
 
     return account, saldo_pocz, saldo_konc, transactions, num_20, num_28C
-
 
 def detect_bank(text: str) -> str:
     text_up = text.upper()
@@ -332,7 +335,7 @@ def build_mt940(account: str, saldo_poczatkowe: str, saldo_koncowe: str,
         gvc = map_transaction_code(desc)
         ref = extract_invoice_number(desc) or ""
         lines.append(f":61:{d}{entry_date}{cd}{amt}{gvc}//NONREF")
-        segs86 = build_86_segments(desc, ref, gvc.replace('N',''))
+        segs86 = build_86_segments(desc, ref, gvc.replace('N', ''))
         lines.extend(segs86)
     end_date = transactions[-1][0]
     lines.append(f":62F:C{end_date}PLN{format_mt940_amount(saldo_koncowe)}")
@@ -342,6 +345,7 @@ def build_mt940(account: str, saldo_poczatkowe: str, saldo_koncowe: str,
 
 def save_mt940_file(mt940_text: str, output_path: str) -> None:
     try:
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
         with open(output_path, "w", encoding="windows-1250", newline="") as f:
             f.write(mt940_text)
     except Exception as e:
@@ -398,11 +402,11 @@ def main() -> None:
     print(f"\nLICZBA TRANSAKCJI ZNALEZIONYCH: {len(tx)}\n")
     print(f"Wykryty bank: {bank_name}\n")
     mt940 = build_mt940(account, sp, sk, tx, num_20, num_28C)
-    if args.debug:
-        print("\n=== Pierwsze 30 linii MT940 (DEBUG) ===")
-        print("\n".join(mt940.splitlines()[:30]))
-        print("============================\n")
+    # ZLICZ I WYPISZ LINIJE :61:
+    lines_61 = [l for l in mt940.splitlines() if l.startswith(":61:")]
+    print(f"Liczba linii ':61:' w pliku: {len(lines_61)}")
     save_mt940_file(mt940, args.output_mt940)
+    print(f"Plik zapisany: {os.path.exists(args.output_mt940)} {args.output_mt940}")
     print(f"✅ Konwersja zakończona! Plik zapisany jako {args.output_mt940} (kodowanie WINDOWS-1250/UTF-8, separator CRLF).")
 
 if __name__ == "__main__":
