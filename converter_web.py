@@ -433,20 +433,27 @@ def main() -> None:
         sys.exit(3)
         
     if tx:
+        # Debug: pokaż daty transakcji
+        print(f"Daty transakcji: {[t[0] for t in tx]}")
+
+        # Wyciągnij i zweryfikuj pierwszą datę transakcji
         first_tx_date = tx[0][0]
         try:
             parsed_date = datetime.strptime(first_tx_date, '%y%m%d')
-        except Exception:
-            parsed_date = datetime.now()
-        month_names = [
-            '', 'Styczeń', 'Luty', 'Marzec', 'Kwiecień', 'Maj', 'Czerwiec',
-            'Lipiec', 'Sierpień', 'Wrzesień', 'Październik', 'Listopad', 'Grudzień'
-        ]
-        statement_month = f"{month_names[parsed_date.month]} {parsed_date.year}"
+            month_names = [
+                '', 'Styczeń', 'Luty', 'Marzec', 'Kwiecień', 'Maj', 'Czerwiec',
+                'Lipiec', 'Sierpień', 'Wrzesień', 'Październik', 'Listopad', 'Grudzień'
+            ]
+            statement_month = f"{month_names[parsed_date.month]} {parsed_date.year}"
+        except Exception as e:
+            print(f"BŁĄD DATY wyciągu: {first_tx_date} – {e}")
+            statement_month = "Nieznany"
     else:
+        print("Brak transakcji do analizy dat.")
         statement_month = "Nieznany"
-        
+
     print(f"Miesiąc wyciągu: {statement_month}")
+
     print(f"\nLICZBA TRANSAKCJI ZNALEZIONYCH: {len(tx)}\n")
     print(f"Wykryty bank: {bank_name}\n")
     mt940 = build_mt940(account, sp, sk, tx, num_20, num_28C)
