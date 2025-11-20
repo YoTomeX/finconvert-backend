@@ -280,7 +280,27 @@ def santander_parser(text: str):
 
     transactions = deduplicate_transactions(transactions)
     num_20, num_28C = extract_mt940_headers(transactions, text)
+    
+    print("Santander - linie PDF:")
+    for line in text.split('\n'):
+        print(line)
+
     return account, saldo_pocz, saldo_konc, transactions, num_20, num_28C
+    
+def parse_santander(text):
+    tx = []
+    for line in text.split('\n'):
+        print('LINE:', line)
+        # Przykład: szukaj po regexie daty operacji
+        m = re.match(r'(\d{2}\.\d{2}\.\d{4})\s+(\S+)\s+(.*?)\s+([\d\.]+)', line)
+        if m:
+            # parsuj
+            dt_raw = m.group(1)
+            # dalej wyciągaj datę/kwotę/opis
+            ...
+            tx.append((dt, ...))
+    print("Santander - transakcji znaleziono:", len(tx))
+    return tx
 
 
 def remove_trailing_86(mt940_text: str) -> str:
