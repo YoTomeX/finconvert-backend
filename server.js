@@ -7,7 +7,7 @@ const fs         = require('fs');
 const cors       = require('cors');
 
 const app  = express();
-const port = const port = parseInt(process.env.PORT || "3000", 10);
+const port = parseInt(process.env.PORT || "3000", 10);
 
 // Konfiguracja CORS - tylko jedna, solidna linia middleware!
 app.use(cors({
