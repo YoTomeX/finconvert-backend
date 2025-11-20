@@ -101,7 +101,6 @@ app.post('/convert', upload.single('file'), (req, res) => {
     }
 
     let statementMonth = 'Nieznany';
-	let statementMonth = 'Nieznany';
 
 	// Poluj TYLKO na: "Miesiąc wyciągu: XYZ"
 	const monthRegex = /Miesiąc wyciągu:\s*([^\n\r]+)/;
