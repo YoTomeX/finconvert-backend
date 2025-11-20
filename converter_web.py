@@ -222,11 +222,36 @@ def santander_parser(text: str):
     i = 0
     while i < len(lines):
         line = lines[i].strip()
-        # Wariant na format: Data operacji <data> ... <kwota> PLN
-        m = re.match(r'^Data operacji (\d{2}\.\d{2}\.\d{4}).*?([\-]?\d+[.,]\d{2})\s*PLN', line)
-        if m:
-            dt_raw = m.group(1)
-            amt_raw = m.group(2)
+        # 1. Szukaj: Data operacji <tekst> <kwota> PLN <saldo> (data w linii niżej)
+        m1 = re.match(r'^Data operacji (.+?) ([\-]?\d+[.,]\d{2}) PLN [\-]?\d+[.,]\d{2} PLN', line)
+        if m1 and i+1 < len(lines):
+            desc_main = m1.group(1).strip()
+            amt_raw = m1.group(2)
+            date_line = lines[i+1].strip()
+            m_date = re.match(r'^(\d{4})-(\d{2})-(\d{2})$', date_line)
+            desc_extra = ""
+            # Pobierz dodatkowy opis jeśli występuje
+            j = i+2
+            while j < len(lines) and lines[j].strip() and not lines[j].startswith("Data operacji"):
+                desc_extra += " " + lines[j].strip()
+                j += 1
+            try:
+                if m_date:
+                    dt = datetime.strptime(date_line, "%Y-%m-%d").strftime("%y%m%d")
+                else:
+                    dt = datetime.now().strftime("%y%m%d")
+            except Exception:
+                dt = datetime.now().strftime("%y%m%d")
+            amt = clean_amount(amt_raw)
+            desc = desc_main + desc_extra.strip()
+            transactions.append((dt, amt, desc))
+            i = j
+            continue
+        # 2. Szukaj: Data operacji DD.MM.YYYY ... (data w tej samej linii)
+        m2 = re.match(r'^Data operacji (\d{2}\.\d{2}\.\d{4}).*?([\-]?\d+[.,]\d{2})\s*PLN', line)
+        if m2:
+            dt_raw = m2.group(1)
+            amt_raw = m2.group(2)
             desc_lines = [line]
             j = i + 1
             while j < len(lines) and not lines[j].strip().startswith("Data operacji") and lines[j].strip():
@@ -251,6 +276,7 @@ def santander_parser(text: str):
     num_20, num_28C = extract_mt940_headers(transactions, text)
 
     return account, saldo_pocz, saldo_konc, transactions, num_20, num_28C
+
 
 def detect_bank(text: str) -> str:
     text_up = text.upper()
