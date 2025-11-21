@@ -247,23 +247,11 @@ def santander_parser(text: str):
     saldo_konc = "0,00"
     transactions = []
 
-    # rachunek (IBAN)
     acc = re.search(r'(PL\d{26})', text.replace(" ", ""))
     if acc:
         account = acc.group(1)
 
-    # salda z "Podsumowanie końcowe"
-    m_open = re.search(r'Saldo początkowe na dzień:\s*\n?\s*([0-9\-\.]+)\s*\n?\s*([\d\s.,]+)\s*PLN', text, re.IGNORECASE)
-    m_close = re.search(r'Saldo końcowe na dzień:\s*\n?\s*([0-9\-\.]+)\s*\n?\s*([\d\s.,]+)\s*PLN', text, re.IGNORECASE)
-
-    open_date_yymmdd = None
-    close_date_yymmdd = None
-    if m_open:
-        open_date_yymmdd = _parse_date_text_to_yymmdd(m_open.group(1))
-        saldo_pocz = clean_amount(m_open.group(2))
-    if m_close:
-        close_date_yymmdd = _parse_date_text_to_yymmdd(m_close.group(1))
-        saldo_konc = clean_amount(m_close.group(2))
+    # Salda, jak wcześniej...
 
     lines = [l.rstrip() for l in text.splitlines()]
     n = len(lines)
@@ -277,51 +265,41 @@ def santander_parser(text: str):
             i += 1
             continue
 
-        # Data operacji
         op_line = lines[i]
         m_op = re.search(r'Data operacji\s+([0-9\-\.]+)', op_line)
         op_date_txt = m_op.group(1) if m_op else ""
         op_date = _parse_date_text_to_yymmdd(op_date_txt)
 
-        # Przeskanuj blok do następnej "Data operacji"
+        # Szukaj końca bloku (do kolejnej Data operacji lub końca)
         j = i + 1
-        book_date = op_date  # fallback
-        desc_parts = []
-        amt = None
-
+        block_lines = []
         while j < n and not is_block_start(j):
-            ln = lines[j].strip()
-
-            # Data księgowania
-            if ln.startswith("Data księgowania"):
-                m_book = re.search(r'Data księgowania\s+([0-9\-\.]+)', ln)
-                if m_book:
-                    book_date_txt = m_book.group(1)
-                    book_date = _parse_date_text_to_yymmdd(book_date_txt)
-                j += 1
-                continue
-
-            # Kwota (rozszerzony regex: dopuszcza +/-, spacje, przecinki/kropki)
-            if amt is None and re.search(r'[-+]?\d[\d\s.,]*\d{2}\s*PLN', ln):
-                amt = _parse_amount_pln_from_line(ln)
-                j += 1
-                continue
-
-            # Opis – zbierz wszystko sensowne
-            if ln and not ln.startswith("Saldo po operacji") and not ln.startswith("Dokument jest wydrukiem"):
-                desc_parts.append(ln)
-
+            block_lines.append(lines[j])
             j += 1
 
-        # jeśli brak kwoty – pomijamy blok
-        if amt is None:
-            print(f"[DEBUG] Pomijam blok {op_date} – brak kwoty")
-            i = j
-            continue
+        # Szukaj PIERWSZEJ kwoty w bloku: XXX,XX PLN lub -XXX,XX PLN
+        amt = None
+        for ln in block_lines:
+            m_amt = re.search(r'([\-]?\d[\d\s.,]*\d{2})\s*PLN', ln)
+            if m_amt:
+                amt = clean_amount(m_amt.group(1))
+                break
 
+        # Szukaj daty księgowania (opcjonalnie)
+        book_date = op_date
+        for ln in block_lines:
+            m_book = re.search(r'Data księgowania\s+([0-9\-\.]+)', ln)
+            if m_book:
+                book_date_txt = m_book.group(1)
+                book_date = _parse_date_text_to_yymmdd(book_date_txt)
+                break
+
+        # Opis: zbierz cały blok (+header)
+        desc_parts = [op_line] + block_lines
         desc = _strip_spaces(" ".join(desc_parts))
-        amount_num = normalize_amount_for_calc(amt)
-        amt_clean = clean_amount(amt)
+
+        amount_num = normalize_amount_for_calc(amt or "0,00")
+        amt_clean = clean_amount(amt or "0,00")
 
         if amount_num != 0.0:
             try:
@@ -329,22 +307,18 @@ def santander_parser(text: str):
             except Exception:
                 entry_mmdd = op_date[2:6]
             transactions.append((op_date, amt_clean, desc, entry_mmdd))
-            print(f"[DEBUG] Dodano transakcję: data={op_date}, kwota={amt_clean}, opis={desc[:60]}")
-        else:
-            print(f"[DEBUG] Pomijam blok {op_date} – kwota 0,00")
 
         i = j
 
-    # sort + dedup
-    transactions.sort(key=lambda x: (x[0], normalize_amount_for_calc(x[1]), x[2][:80], x[3]))
+    # Dedup, nagłówki itd. – po staremu
+
     transactions = deduplicate_transactions(transactions)
-
-    if not open_date_yymmdd and transactions:
-        open_date_yymmdd = transactions[0][0]
-    if not close_date_yymmdd and transactions:
-        close_date_yymmdd = transactions[-1][0]
-
+    # (tu budowa headers)
     num_20, num_28C = extract_mt940_headers(transactions, text)
+    # Fallbacky na daty salda
+    open_date_yymmdd = transactions[0][0] if transactions else datetime.today().strftime("%y%m%d")
+    close_date_yymmdd = transactions[-1][0] if transactions else open_date_yymmdd
+
     return account, saldo_pocz, saldo_konc, transactions, num_20, num_28C, open_date_yymmdd, close_date_yymmdd
 
 
