@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 import sys
 import re
-import io
-import traceback
 import unicodedata
 import logging
 import argparse
@@ -12,6 +12,7 @@ import pdfplumber
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
+
 def parse_pdf_text(pdf_path: str) -> str:
     try:
         with pdfplumber.open(pdf_path) as pdf:
@@ -20,15 +21,21 @@ def parse_pdf_text(pdf_path: str) -> str:
         logging.error(f"Błąd otwierania lub parsowania PDF: {e}")
         return ""
 
+
 def remove_diacritics(text: str) -> str:
     if not text:
         return ""
     nkfd = unicodedata.normalize('NFKD', text)
     no_comb = "".join([c for c in nkfd if not unicodedata.combining(c)])
-    no_comb = no_comb.replace('ł', 'l').replace('Ł', 'L')
+    # Dodatkowe mapowania dla polskich znaków, które po NFKD mogą być utracone/niewłaściwe
+    no_comb = (no_comb
+               .replace('ł', 'l')
+               .replace('Ł', 'L'))
+    # Zachowaj bezpieczny zestaw znaków
     cleaned = re.sub(r'[^A-Za-z0-9\s,\.\-\/\(\)\:\+\%]', ' ', no_comb)
     cleaned = re.sub(r'\s+', ' ', cleaned).strip()
     return cleaned.upper()
+
 
 def normalize_amount_for_calc(s) -> float:
     if s is None:
@@ -44,11 +51,13 @@ def normalize_amount_for_calc(s) -> float:
     if ss.startswith('-'):
         neg = True
         ss = ss.lstrip('-')
+    # Usuwanie separatorów tysięcy i normalizacja przecinka
     if '.' in ss and ',' in ss:
         ss = ss.replace('.', '').replace(',', '.')
     else:
         if ',' in ss and '.' not in ss:
             ss = ss.replace(',', '.')
+        # Wzorzec tysiąca, np. 1.234,56 -> usuń kropki tys.
         if re.search(r'\d\.\d{3}\b', ss):
             ss = ss.replace('.', '')
     try:
@@ -57,9 +66,18 @@ def normalize_amount_for_calc(s) -> float:
         val = 0.0
     return -val if neg else val
 
+
+def clean_amount(amount) -> str:
+    s = str(amount).replace('\xa0', '').strip()
+    s = re.sub(r'\s+', '', s)
+    val = normalize_amount_for_calc(s)
+    return "{:.2f}".format(val).replace('.', ',')
+
+
 def format_mt940_amount(amount) -> str:
     val = normalize_amount_for_calc(amount)
     return "{:.2f}".format(val).replace('.', ',')
+
 
 def format_account_for_25(acc_raw) -> str:
     if not acc_raw:
@@ -73,31 +91,29 @@ def format_account_for_25(acc_raw) -> str:
         return acc
     return f"/{acc}"
 
+
 def map_transaction_code(desc: str) -> str:
     if not desc:
         return 'NTRF'
     desc_clean = remove_diacritics(desc)
-    if any(x in desc_clean for x in ('ZUS','KRUS','VAT','JPK')):
+    if any(x in desc_clean for x in ('ZUS', 'KRUS', 'VAT', 'JPK')):
         return 'N562'
-    if 'PRZELEW PODZIELONY' in desc_clean:
+    if 'PRZELEW PODZIELONY' in desc_clean or 'PŁATNOŚĆ PODZIELONA' in desc_clean or 'PLATNOSC PODZIELONA' in desc_clean:
         return 'N641'
-    if any(x in desc_clean for x in ('PRZELEW KRAJOWY','PRZELEW MIEDZYBANKOWY','PRZELEW EXPRESS ELIXIR','PRZELEW')):
+    if any(x in desc_clean for x in ('PRZELEW KRAJOWY', 'PRZELEW MIEDZYBANKOWY', 'PRZELEW EXPRESS ELIXIR', 'PRZELEW ELIXIR', 'PRZELEW NA RACHUNEK BANKU')):
         return 'N240'
-    if 'OBCIAZENIE RACHUNKU' in desc_clean:
+    if 'OBCIAZENIE RACHUNKU' in desc_clean or 'OBCIĄŻENIE RACHUNKU' in desc:
         return 'N495'
-    if any(x in desc_clean for x in ('POBRANIE OPLATY','PROWIZJA')):
+    if any(x in desc_clean for x in ('POBRANIE OPLATY', 'PROWIZJA', 'OPLATA', 'OPŁATA')):
         return 'N775'
-    if 'WPLATA ZASILENIE' in desc_clean:
+    if 'WPLATA ZASILENIE' in desc_clean or 'UZNANIE' in desc_clean:
         return 'N524'
     if 'CZEK' in desc_clean:
         return 'N027'
+    if 'TRANSAKCJA KARTA' in desc_clean or 'TRANSAKCJA KARTĄ' in desc:
+        return 'NTRF'
     return 'NTRF'
 
-def clean_amount(amount) -> str:
-    s = str(amount).replace('\xa0', '').strip()
-    s = re.sub(r'\s+', '', s)
-    val = normalize_amount_for_calc(s)
-    return "{:.2f}".format(val).replace('.', ',')
 
 def extract_mt940_headers(transactions: list, text: str) -> tuple[str, str]:
     if transactions and transactions[0][0]:
@@ -114,26 +130,38 @@ def extract_mt940_headers(transactions: list, text: str) -> tuple[str, str]:
             num_28C = page_match.group(1).zfill(5)
     return num_20, num_28C
 
+
 def deduplicate_transactions(transactions: list) -> list:
     seen = set()
     out = []
     for t in transactions:
-        key = (t[0], t[1], t[2][:50])
+        # t = (op_date, amount, desc, entry_mmdd)
+        key = (t[0], t[1], (t[2] or '')[:80], t[3] if len(t) > 3 else '')
         if key not in seen:
             seen.add(key)
             out.append(t)
     return out
 
+
 def format_cd_flag(amount: str) -> str:
     val = normalize_amount_for_calc(amount)
     return 'D' if val < 0 else 'C'
 
+
+def safe_86_text(s: str, maxlen: int = 140) -> str:
+    txt = remove_diacritics(s or '')
+    txt = re.sub(r'[^A-Z0-9\s,\.\-\/\(\)\:\+\%]', ' ', txt)
+    txt = re.sub(r'\s+', ' ', txt).strip()
+    return txt[:maxlen]
+
+
 def truncate_description(text: str, maxlen: int = 140) -> str:
-    return text[:maxlen]
+    return (text or '')[:maxlen]
+
 
 def build_86_segments(description: str) -> str:
-    # Tylko jeden wiersz na transakcję!
-    return f":86:/00{truncate_description(description, 140)}"
+    return f":86:/00{safe_86_text(description, 140)}"
+
 
 def pekao_parser(text: str):
     account = ""
@@ -169,14 +197,46 @@ def pekao_parser(text: str):
             except Exception:
                 dt = datetime.now().strftime("%y%m%d")
             amt = clean_amount(amt_raw)
-            transactions.append((dt, amt, desc))
+            transactions.append((dt, amt, desc, dt[2:6]))  # entry mmdd fallback = same day
             i = j
             continue
         i += 1
-    transactions.sort(key=lambda x: x[0])
+    transactions.sort(key=lambda x: (x[0], normalize_amount_for_calc(x[1]), x[2][:50]))
     transactions = deduplicate_transactions(transactions)
     num_20, num_28C = extract_mt940_headers(transactions, text)
-    return account, saldo_pocz, saldo_konc, transactions, num_20, num_28C
+    # Brak jawnych sald w tym parserze
+    open_d = transactions[0][0] if transactions else datetime.today().strftime("%y%m%d")
+    close_d = transactions[-1][0] if transactions else open_d
+    return account, saldo_pocz, saldo_konc, transactions, num_20, num_28C, open_d, close_d
+
+
+def _strip_spaces(s: str) -> str:
+    return re.sub(r'\s+', ' ', s or '').strip()
+
+
+def _parse_date_text_to_yymmdd(s: str) -> str:
+    # Obsługa formatów: YYYY-MM-DD oraz DD.MM.YYYY
+    s = s.strip()
+    for fmt in ("%Y-%m-%d", "%d.%m.%Y"):
+        try:
+            return datetime.strptime(s, fmt).strftime("%y%m%d")
+        except Exception:
+            continue
+    # Jeśli to sama data w postaci YYYY-MM-DD rozbita, spróbuj wyciągnąć
+    m = re.match(r'(\d{4})-(\d{2})-(\d{2})', s)
+    if m:
+        try:
+            return datetime.strptime(s, "%Y-%m-%d").strftime("%y%m%d")
+        except Exception:
+            pass
+    # Fallback: dziś
+    return datetime.now().strftime("%y%m%d")
+
+
+def _parse_amount_pln_from_line(s: str) -> str:
+    m = re.search(r'([\-]?\d[\d\s.,]*\d{2})\s*PLN', s)
+    return clean_amount(m.group(1)) if m else "0,00"
+
 
 def santander_parser(text: str):
     account = ""
@@ -184,65 +244,99 @@ def santander_parser(text: str):
     saldo_konc = "0,00"
     transactions = []
 
+    # rachunek (IBAN)
     acc = re.search(r'(PL\d{26})', text.replace(" ", ""))
     if acc:
         account = acc.group(1)
 
-    lines = text.splitlines()
+    # salda z "Podsumowanie końcowe"
+    m_open = re.search(r'Saldo początkowe na dzień:\s*\n?\s*([0-9\-\.]+)\s*\n?\s*([\d\s.,]+)\s*PLN', text, re.IGNORECASE)
+    m_close = re.search(r'Saldo końcowe na dzień:\s*\n?\s*([0-9\-\.]+)\s*\n?\s*([\d\s.,]+)\s*PLN', text, re.IGNORECASE)
+
+    open_date_yymmdd = None
+    close_date_yymmdd = None
+    if m_open:
+        open_date_yymmdd = _parse_date_text_to_yymmdd(m_open.group(1))
+        saldo_pocz = clean_amount(m_open.group(2))
+    if m_close:
+        close_date_yymmdd = _parse_date_text_to_yymmdd(m_close.group(1))
+        saldo_konc = clean_amount(m_close.group(2))
+
+    lines = [l.rstrip() for l in text.splitlines()]
+    n = len(lines)
+
+    def is_block_start(idx: int) -> bool:
+        return lines[idx].startswith("Data operacji")
+
     i = 0
-    while i < len(lines):
-        line = lines[i].strip()
-        m1 = re.match(r'^Data operacji (.+?) ([\-]?\d+[.,]\d{2}) PLN [\-]?\d+[.,]\d{2} PLN', line)
-        if m1 and i+1 < len(lines):
-            desc_main = m1.group(1).strip()
-            amt_raw = m1.group(2)
-            date_line = lines[i+1].strip()
-            m_date = re.match(r'^(\d{4})-(\d{2})-(\d{2})$', date_line)
-            desc_extra = ""
-            j = i+2
-            while j < len(lines) and lines[j].strip() and not lines[j].startswith("Data operacji"):
-                desc_extra += " " + lines[j].strip()
-                j += 1
-            try:
-                if m_date:
-                    dt = datetime.strptime(date_line, "%Y-%m-%d").strftime("%y%m%d")
-                else:
-                    dt = datetime.now().strftime("%y%m%d")
-            except Exception:
-                dt = datetime.now().strftime("%y%m%d")
-            amt = clean_amount(amt_raw)
-            desc = desc_main + desc_extra.strip()
-            transactions.append((dt, amt, desc))
-            i = j
+    while i < n:
+        if not is_block_start(i):
+            i += 1
             continue
-        m2 = re.match(r'^Data operacji (\d{2}\.\d{2}\.\d{4}).*?([\-]?\d+[.,]\d{2})\s*PLN', line)
-        if m2:
-            dt_raw = m2.group(1)
-            amt_raw = m2.group(2)
-            desc_lines = [line]
-            j = i + 1
-            while j < len(lines) and not lines[j].strip().startswith("Data operacji") and lines[j].strip():
-                desc_lines.append(lines[j].strip())
+
+        # Data operacji
+        op_line = lines[i]
+        m_op = re.search(r'Data operacji\s+([0-9\-\.]+)', op_line)
+        op_date_txt = m_op.group(1) if m_op else ""
+        op_date = _parse_date_text_to_yymmdd(op_date_txt)
+
+        # Przeskanuj blok do następnej "Data operacji"
+        j = i + 1
+        book_date = op_date  # fallback
+        desc_parts = []
+        amt = None
+
+        while j < n and not is_block_start(j):
+            ln = lines[j].strip()
+
+            # Data księgowania
+            if ln.startswith("Data księgowania"):
+                m_book = re.search(r'Data księgowania\s+([0-9\-\.]+)', ln)
+                if m_book:
+                    book_date_txt = m_book.group(1)
+                    book_date = _parse_date_text_to_yymmdd(book_date_txt)
                 j += 1
-            desc = " ".join(desc_lines).strip()
+                continue
+
+            # Kwota (w dowolnym miejscu bloku)
+            if amt is None and re.search(r'[\-]?\d[\d\s.,]*\d{2}\s*PLN', ln):
+                amt = _parse_amount_pln_from_line(ln)
+                j += 1
+                continue
+
+            # Opis – zbierz wszystko sensowne (pomijaj "Saldo po operacji", disclaimery itp.)
+            if ln and not ln.startswith("Saldo po operacji") and not ln.startswith("Dokument jest wydrukiem"):
+                desc_parts.append(ln)
+
+            j += 1
+
+        desc = _strip_spaces(" ".join(desc_parts))
+        amount_num = normalize_amount_for_calc(amt or "0,00")
+        amt_clean = clean_amount(amt or "0,00")
+
+        if amount_num != 0.0:
+            # YYMMDD + MMDD (entry date mmdd)
             try:
-                dt = datetime.strptime(dt_raw, "%d.%m.%Y").strftime("%y%m%d")
+                entry_mmdd = datetime.strptime(book_date, "%y%m%d").strftime("%m%d")
             except Exception:
-                dt = datetime.now().strftime("%y%m%d")
-            amt = clean_amount(amt_raw)
-            transactions.append((dt, amt, desc))
-            i = j
-            continue
-        i += 1
+                entry_mmdd = op_date[2:6]
+            transactions.append((op_date, amt_clean, desc, entry_mmdd))
 
-    if transactions:
-        saldo_pocz = transactions[0][1]
-        saldo_konc = transactions[-1][1]
+        i = j
 
+    # sort + dedup
+    transactions.sort(key=lambda x: (x[0], normalize_amount_for_calc(x[1]), x[2][:80], x[3]))
     transactions = deduplicate_transactions(transactions)
-    num_20, num_28C = extract_mt940_headers(transactions, text)
 
-    return account, saldo_pocz, saldo_konc, transactions, num_20, num_28C
+    # Daty sald fallback do pierwszej/ostatniej transakcji
+    if not open_date_yymmdd and transactions:
+        open_date_yymmdd = transactions[0][0]
+    if not close_date_yymmdd and transactions:
+        close_date_yymmdd = transactions[-1][0]
+
+    num_20, num_28C = extract_mt940_headers(transactions, text)
+    return account, saldo_pocz, saldo_konc, transactions, num_20, num_28C, open_date_yymmdd, close_date_yymmdd
+
 
 def detect_bank(text: str) -> str:
     text_up = text.upper()
@@ -275,43 +369,38 @@ def detect_bank(text: str) -> str:
             return "Alior"
     return "Nieznany"
 
+
 def build_mt940(account: str, saldo_poczatkowe: str, saldo_koncowe: str,
-                transactions: list, num_20: str, num_28C: str) -> str:
+                transactions: list, num_20: str, num_28C: str,
+                open_date_yymmdd: str = None, close_date_yymmdd: str = None) -> str:
     lines = [
         f":20:{num_20}",
         f":25:/{account}",
         f":28C:{num_28C}"
     ]
-    if not transactions:
-        today = datetime.today().strftime("%y%m%d")
-        cd_flag = format_cd_flag(saldo_poczatkowe)
-        lines.append(f":60F:{cd_flag}{today}PLN{format_mt940_amount(saldo_poczatkowe)}")
-        cd_flag_end = format_cd_flag(saldo_koncowe)
-        lines.append(f":62F:{cd_flag_end}{today}PLN{format_mt940_amount(saldo_koncowe)}")
-        lines.append(f":64:{cd_flag_end}{today}PLN{format_mt940_amount(saldo_koncowe)}")
-        lines.append("-")
-        return "\r\n".join(lines)
 
-    start_date = transactions[0][0]
-    cd_flag_start = format_cd_flag(saldo_poczatkowe)
-    lines.append(f":60F:{cd_flag_start}{start_date}PLN{format_mt940_amount(saldo_poczatkowe)}")
+    # Saldo początkowe :60F:
+    start_date = open_date_yymmdd or (transactions[0][0] if transactions else datetime.today().strftime("%y%m%d"))
+    lines.append(f":60F:{format_cd_flag(saldo_poczatkowe)}{start_date}PLN{format_mt940_amount(saldo_poczatkowe)}")
 
-    for d, a, desc in deduplicate_transactions(transactions):
-        if normalize_amount_for_calc(a) == 0.0:
-            continue  # pomijamy transakcje zerowe
-        cd = format_cd_flag(a)
-        amt = format_mt940_amount(a)
-        entry_date = d[2:6]  # MMDD
-        gvc = map_transaction_code(desc)
-        lines.append(f":61:{d}{entry_date}{cd}{amt}{gvc}//NONREF")
-        lines.append(build_86_segments(desc))
+    # Transakcje :61: + :86:
+    if transactions:
+        for d, a, desc, mmdd in transactions:
+            if normalize_amount_for_calc(a) == 0.0:
+                continue
+            cd = format_cd_flag(a)
+            amt = format_mt940_amount(a)
+            gvc = map_transaction_code(desc)
+            lines.append(f":61:{d}{mmdd}{cd}{amt}{gvc}//NONREF")
+            lines.append(build_86_segments(desc))
 
-    end_date = transactions[-1][0]
-    cd_flag_end = format_cd_flag(saldo_koncowe)
-    lines.append(f":62F:{cd_flag_end}{end_date}PLN{format_mt940_amount(saldo_koncowe)}")
-    lines.append(f":64:{cd_flag_end}{end_date}PLN{format_mt940_amount(saldo_koncowe)}")
+    # Saldo końcowe :62F: i :64:
+    end_date = close_date_yymmdd or (transactions[-1][0] if transactions else start_date)
+    lines.append(f":62F:{format_cd_flag(saldo_koncowe)}{end_date}PLN{format_mt940_amount(saldo_koncowe)}")
+    lines.append(f":64:{format_cd_flag(saldo_koncowe)}{end_date}PLN{format_mt940_amount(saldo_koncowe)}")
     lines.append("-")
     return "\r\n".join(lines)
+
 
 def save_mt940_file(mt940_text: str, output_path: str) -> None:
     try:
@@ -323,36 +412,40 @@ def save_mt940_file(mt940_text: str, output_path: str) -> None:
         with open(output_path, "w", encoding="utf-8", newline="\r\n") as f:
             f.write(mt940_text)
 
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Konwerter PDF do MT940")
     parser.add_argument("input_pdf", help="Ścieżka do pliku wejściowego PDF.")
     parser.add_argument("output_mt940", help="Ścieżka do pliku wyjściowego MT940.")
     parser.add_argument("--debug", action="store_true", help="Tryb debugowania")
     args = parser.parse_args()
+
     if args.debug:
         logging.getLogger().setLevel(logging.DEBUG)
+
     text = parse_pdf_text(args.input_pdf)
     if not text:
         logging.error("Brak tekstu z PDF — upewnij się, że pdfplumber odczytuje strony.")
         sys.exit(2)
+
     bank_name = detect_bank(text)
     if args.debug:
         print("\n=== WYPIS EKSTRAKTU Z PDF (DEBUG) ===")
         print(text[:4000])
         print(f"\n>>> Wykryty bank: {bank_name}\n")
         print("============================\n")
-    parser_map = {
-        "Pekao": pekao_parser,
-        "Santander": santander_parser,
-        # Dodaj kolejne parsery tu...
-    }
-    if bank_name in parser_map:
-        account, sp, sk, tx, num_20, num_28C = parser_map[bank_name](text)
+
+    if bank_name == "Santander":
+        account, sp, sk, tx, num_20, num_28C, open_d, close_d = santander_parser(text)
+    elif bank_name == "Pekao":
+        account, sp, sk, tx, num_20, num_28C, open_d, close_d = pekao_parser(text)
     else:
         logging.error(f"Bank {bank_name} nieobsługiwany lub nierozpoznany.")
         sys.exit(3)
+
+    # Informacje pomocnicze
+    print(f"Daty transakcji: {[t[0] for t in tx]}")
     if tx:
-        print(f"Daty transakcji: {[t[0] for t in tx]}")
         first_tx_date = tx[0][0]
         try:
             parsed_date = datetime.strptime(first_tx_date, '%y%m%d')
@@ -370,10 +463,19 @@ def main() -> None:
     print(f"Miesiąc wyciągu: {statement_month}")
     print(f"\nLICZBA TRANSAKCJI ZNALEZIONYCH: {len(tx)}\n")
     print(f"Wykryty bank: {bank_name}\n")
-    mt940 = build_mt940(account, sp, sk, tx, num_20, num_28C)
+
+    # Budowa MT940
+    mt940 = build_mt940(account, sp, sk, tx, num_20, num_28C, open_d, close_d)
+
+    # Zlicz :61:
+    lines_61 = [l for l in mt940.splitlines() if l.startswith(":61:")]
+    print(f"Liczba linii ':61:' w pliku: {len(lines_61)}")
+
+    # Zapis
     save_mt940_file(mt940, args.output_mt940)
     print(f"Plik zapisany: {os.path.exists(args.output_mt940)} {args.output_mt940}")
     print(f"✅ Konwersja zakończona! Plik zapisany jako {args.output_mt940} (kodowanie WINDOWS-1250/UTF-8, separator CRLF).")
+
 
 if __name__ == "__main__":
     try:
