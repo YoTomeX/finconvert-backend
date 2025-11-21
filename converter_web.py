@@ -12,8 +12,6 @@ import pdfplumber
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
-HEADERS_BREAK = (':20:', ':25:', ':28C:', ':60F:', ':62F:', ':64:', '-')
-
 def parse_pdf_text(pdf_path: str) -> str:
     try:
         with pdfplumber.open(pdf_path) as pdf:
@@ -59,24 +57,8 @@ def normalize_amount_for_calc(s) -> float:
         val = 0.0
     return -val if neg else val
 
-def format_amount_12(amount) -> str:
-    if isinstance(amount, str):
-        val = normalize_amount_for_calc(amount)
-    else:
-        try:
-            val = float(amount)
-        except Exception:
-            val = 0.0
-    abs_val = abs(val)
-    normalized = f"{abs_val:.2f}"
-    integer, frac = normalized.split('.')
-    integer_padded = integer.zfill(12)
-    return f"{integer_padded},{frac}"
-
 def format_mt940_amount(amount) -> str:
-    """Przygotuj kwotę do formatu MT940 (np. 100,00)"""
     val = normalize_amount_for_calc(amount)
-    # W MT940 przecinek jako separator dziesiętny, kropka separator tysięcy
     return "{:.2f}".format(val).replace('.', ',')
 
 def format_account_for_25(acc_raw) -> str:
@@ -142,35 +124,16 @@ def deduplicate_transactions(transactions: list) -> list:
             out.append(t)
     return out
 
-def extract_invoice_number(text: str) -> str:
-    patterns = [
-        r'\b\d{2}-[A-Z]{3}/\d{2}/\d{4}\b',
-        r'\bF/\d{8}/\d{2}/\d{2}\b',
-        r'\bFAKTURA\s+NR[:\s]*([A-Za-z0-9/-]+)',
-        r'\bFAKTURA\s+SACC\s+([A-Za-z0-9]+)',
-        r'\bFAKTURA\s+([A-Za-z0-9/-]+)',
-    ]
-    for p in patterns:
-        m = re.search(p, text, re.IGNORECASE)
-        if m:
-            return m.group(1) if m.lastindex else m.group(0)
-    return ""
+def format_cd_flag(amount: str) -> str:
+    val = normalize_amount_for_calc(amount)
+    return 'D' if val < 0 else 'C'
 
-def extract_core_title_info(description: str) -> str:
-    return description
-
-def truncate_description(text: str, maxlen: int = 200) -> str:
+def truncate_description(text: str, maxlen: int = 140) -> str:
     return text[:maxlen]
 
-def build_86_segments(description: str, ref: str, gvc: str) -> list:
-    core = extract_core_title_info(description)
-    desc_main = truncate_description(core)
-    segs = [f":86:/00{desc_main}"]
-    if ref:
-        segs.append(f":86:/20{ref}")
-    if gvc:
-        segs.append(f":86:/40N{gvc}")
-    return segs
+def build_86_segments(description: str) -> str:
+    # Tylko jeden wiersz na transakcję!
+    return f":86:/00{truncate_description(description, 140)}"
 
 def pekao_parser(text: str):
     account = ""
@@ -312,11 +275,6 @@ def detect_bank(text: str) -> str:
             return "Alior"
     return "Nieznany"
 
-def format_cd_flag(amount: str) -> str:
-    """Zwraca C (credit) lub D (debit) w zależności od znaku kwoty"""
-    val = normalize_amount_for_calc(amount)
-    return 'D' if val < 0 else 'C'
-
 def build_mt940(account: str, saldo_poczatkowe: str, saldo_koncowe: str,
                 transactions: list, num_20: str, num_28C: str) -> str:
     lines = [
@@ -345,10 +303,8 @@ def build_mt940(account: str, saldo_poczatkowe: str, saldo_koncowe: str,
         amt = format_mt940_amount(a)
         entry_date = d[2:6]  # MMDD
         gvc = map_transaction_code(desc)
-        ref = extract_invoice_number(desc) or ""
         lines.append(f":61:{d}{entry_date}{cd}{amt}{gvc}//NONREF")
-        segs86 = build_86_segments(desc, ref, gvc.replace('N', ''))
-        lines.extend(segs86)
+        lines.append(build_86_segments(desc))
 
     end_date = transactions[-1][0]
     cd_flag_end = format_cd_flag(saldo_koncowe)
@@ -356,7 +312,6 @@ def build_mt940(account: str, saldo_poczatkowe: str, saldo_koncowe: str,
     lines.append(f":64:{cd_flag_end}{end_date}PLN{format_mt940_amount(saldo_koncowe)}")
     lines.append("-")
     return "\r\n".join(lines)
-
 
 def save_mt940_file(mt940_text: str, output_path: str) -> None:
     try:
@@ -367,7 +322,6 @@ def save_mt940_file(mt940_text: str, output_path: str) -> None:
         logging.error(f"Błąd zapisu w Windows-1250: {e}. Zapisuję w UTF-8.")
         with open(output_path, "w", encoding="utf-8", newline="\r\n") as f:
             f.write(mt940_text)
-
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Konwerter PDF do MT940")
@@ -387,7 +341,6 @@ def main() -> None:
         print(text[:4000])
         print(f"\n>>> Wykryty bank: {bank_name}\n")
         print("============================\n")
-
     parser_map = {
         "Pekao": pekao_parser,
         "Santander": santander_parser,
@@ -418,9 +371,6 @@ def main() -> None:
     print(f"\nLICZBA TRANSAKCJI ZNALEZIONYCH: {len(tx)}\n")
     print(f"Wykryty bank: {bank_name}\n")
     mt940 = build_mt940(account, sp, sk, tx, num_20, num_28C)
-    # ZLICZ I WYPISZ LINIJE :61:
-    lines_61 = [l for l in mt940.splitlines() if l.startswith(":61:")]
-    print(f"Liczba linii ':61:' w pliku: {len(lines_61)}")
     save_mt940_file(mt940, args.output_mt940)
     print(f"Plik zapisany: {os.path.exists(args.output_mt940)} {args.output_mt940}")
     print(f"✅ Konwersja zakończona! Plik zapisany jako {args.output_mt940} (kodowanie WINDOWS-1250/UTF-8, separator CRLF).")
