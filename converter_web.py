@@ -241,7 +241,6 @@ def _parse_amount_pln_from_line(s: str) -> str:
     m = re.search(r'([\-]?\d[\d\s.,]*\d{2})\s*PLN', s)
     return clean_amount(m.group(1)) if m else "0,00"
 
-
 def santander_parser(text: str):
     account = ""
     saldo_pocz = "0,00"
@@ -314,9 +313,14 @@ def santander_parser(text: str):
 
             j += 1
 
+        # jeśli brak kwoty – pomijamy blok
+        if amt is None:
+            i = j
+            continue
+
         desc = _strip_spaces(" ".join(desc_parts))
-        amount_num = normalize_amount_for_calc(amt or "0,00")
-        amt_clean = clean_amount(amt or "0,00")
+        amount_num = normalize_amount_for_calc(amt)
+        amt_clean = clean_amount(amt)
 
         if amount_num != 0.0:
             # YYMMDD + MMDD (entry date mmdd)
