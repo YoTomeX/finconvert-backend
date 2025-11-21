@@ -152,6 +152,10 @@ def safe_86_text(s: str, maxlen: int = 140) -> str:
     txt = remove_diacritics(s or '')
     txt = re.sub(r'[^A-Z0-9\s,\.\-\/\(\)\:\+\%]', ' ', txt)
     txt = re.sub(r'\s+', ' ', txt).strip()
+    txt = (txt.replace("Ą","A").replace("Ć","C").replace("Ę","E")
+           .replace("Ł","L").replace("Ń","N")
+           .replace("Ó","O").replace("Ś","S")
+           .replace("Ź","Z").replace("Ż","Z"))
     return txt[:maxlen]
 
 
@@ -391,7 +395,7 @@ def build_mt940(account: str, saldo_poczatkowe: str, saldo_koncowe: str,
             cd = format_cd_flag(a)
             amt = format_mt940_amount(a)
             gvc = map_transaction_code(desc)
-            lines.append(f":61:{d}{mmdd}{cd}{amt}{gvc}//NONREF")
+            lines.append(f":61:{d}{cd}{amt}{gvc}//NONREF")
             lines.append(build_86_segments(desc))
 
     # Saldo końcowe :62F: i :64:
