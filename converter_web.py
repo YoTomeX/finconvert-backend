@@ -301,13 +301,13 @@ def santander_parser(text: str):
                 j += 1
                 continue
 
-            # Kwota
-            if amt is None and re.search(r'[\-]?\d[\d\s.,]*\d{2}\s*PLN', ln):
+            # Kwota (rozszerzony regex: dopuszcza +/-, spacje, przecinki/kropki)
+            if amt is None and re.search(r'[-+]?\d[\d\s.,]*\d{2}\s*PLN', ln):
                 amt = _parse_amount_pln_from_line(ln)
                 j += 1
                 continue
 
-            # Opis
+            # Opis – zbierz wszystko sensowne
             if ln and not ln.startswith("Saldo po operacji") and not ln.startswith("Dokument jest wydrukiem"):
                 desc_parts.append(ln)
 
@@ -315,6 +315,7 @@ def santander_parser(text: str):
 
         # jeśli brak kwoty – pomijamy blok
         if amt is None:
+            print(f"[DEBUG] Pomijam blok {op_date} – brak kwoty")
             i = j
             continue
 
@@ -328,6 +329,9 @@ def santander_parser(text: str):
             except Exception:
                 entry_mmdd = op_date[2:6]
             transactions.append((op_date, amt_clean, desc, entry_mmdd))
+            print(f"[DEBUG] Dodano transakcję: data={op_date}, kwota={amt_clean}, opis={desc[:60]}")
+        else:
+            print(f"[DEBUG] Pomijam blok {op_date} – kwota 0,00")
 
         i = j
 
