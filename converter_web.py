@@ -301,13 +301,13 @@ def santander_parser(text: str):
                 j += 1
                 continue
 
-            # Kwota (w dowolnym miejscu bloku)
+            # Kwota
             if amt is None and re.search(r'[\-]?\d[\d\s.,]*\d{2}\s*PLN', ln):
                 amt = _parse_amount_pln_from_line(ln)
                 j += 1
                 continue
 
-            # Opis – zbierz wszystko sensowne (pomijaj "Saldo po operacji", disclaimery itp.)
+            # Opis
             if ln and not ln.startswith("Saldo po operacji") and not ln.startswith("Dokument jest wydrukiem"):
                 desc_parts.append(ln)
 
@@ -323,7 +323,6 @@ def santander_parser(text: str):
         amt_clean = clean_amount(amt)
 
         if amount_num != 0.0:
-            # YYMMDD + MMDD (entry date mmdd)
             try:
                 entry_mmdd = datetime.strptime(book_date, "%y%m%d").strftime("%m%d")
             except Exception:
@@ -336,7 +335,6 @@ def santander_parser(text: str):
     transactions.sort(key=lambda x: (x[0], normalize_amount_for_calc(x[1]), x[2][:80], x[3]))
     transactions = deduplicate_transactions(transactions)
 
-    # Daty sald fallback do pierwszej/ostatniej transakcji
     if not open_date_yymmdd and transactions:
         open_date_yymmdd = transactions[0][0]
     if not close_date_yymmdd and transactions:
