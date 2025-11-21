@@ -312,6 +312,11 @@ def detect_bank(text: str) -> str:
             return "Alior"
     return "Nieznany"
 
+def format_cd_flag(amount: str) -> str:
+    """Zwraca C (credit) lub D (debit) w zależności od znaku kwoty"""
+    val = normalize_amount_for_calc(amount)
+    return 'D' if val < 0 else 'C'
+
 def build_mt940(account: str, saldo_poczatkowe: str, saldo_koncowe: str,
                 transactions: list, num_20: str, num_28C: str) -> str:
     lines = [
@@ -321,37 +326,48 @@ def build_mt940(account: str, saldo_poczatkowe: str, saldo_koncowe: str,
     ]
     if not transactions:
         today = datetime.today().strftime("%y%m%d")
-        lines.append(f":60F:C{today}PLN{format_mt940_amount(saldo_poczatkowe)}")
-        lines.append(f":62F:C{today}PLN{format_mt940_amount(saldo_koncowe)}")
-        lines.append(f":64:C{today}PLN{format_mt940_amount(saldo_koncowe)}")
+        cd_flag = format_cd_flag(saldo_poczatkowe)
+        lines.append(f":60F:{cd_flag}{today}PLN{format_mt940_amount(saldo_poczatkowe)}")
+        cd_flag_end = format_cd_flag(saldo_koncowe)
+        lines.append(f":62F:{cd_flag_end}{today}PLN{format_mt940_amount(saldo_koncowe)}")
+        lines.append(f":64:{cd_flag_end}{today}PLN{format_mt940_amount(saldo_koncowe)}")
         lines.append("-")
         return "\r\n".join(lines)
+
     start_date = transactions[0][0]
-    lines.append(f":60F:C{start_date}PLN{format_mt940_amount(saldo_poczatkowe)}")
+    cd_flag_start = format_cd_flag(saldo_poczatkowe)
+    lines.append(f":60F:{cd_flag_start}{start_date}PLN{format_mt940_amount(saldo_poczatkowe)}")
+
     for d, a, desc in deduplicate_transactions(transactions):
-        cd = 'D' if str(a).startswith('-') else 'C'
+        if normalize_amount_for_calc(a) == 0.0:
+            continue  # pomijamy transakcje zerowe
+        cd = format_cd_flag(a)
         amt = format_mt940_amount(a)
-        entry_date = d[2:6] if len(d) >= 6 else d
+        entry_date = d[2:6]  # MMDD
         gvc = map_transaction_code(desc)
         ref = extract_invoice_number(desc) or ""
         lines.append(f":61:{d}{entry_date}{cd}{amt}{gvc}//NONREF")
         segs86 = build_86_segments(desc, ref, gvc.replace('N', ''))
         lines.extend(segs86)
+
     end_date = transactions[-1][0]
-    lines.append(f":62F:C{end_date}PLN{format_mt940_amount(saldo_koncowe)}")
-    lines.append(f":64:C{end_date}PLN{format_mt940_amount(saldo_koncowe)}")
+    cd_flag_end = format_cd_flag(saldo_koncowe)
+    lines.append(f":62F:{cd_flag_end}{end_date}PLN{format_mt940_amount(saldo_koncowe)}")
+    lines.append(f":64:{cd_flag_end}{end_date}PLN{format_mt940_amount(saldo_koncowe)}")
     lines.append("-")
     return "\r\n".join(lines)
+
 
 def save_mt940_file(mt940_text: str, output_path: str) -> None:
     try:
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        with open(output_path, "w", encoding="windows-1250", newline="") as f:
+        with open(output_path, "w", encoding="windows-1250", newline="\r\n") as f:
             f.write(mt940_text)
     except Exception as e:
         logging.error(f"Błąd zapisu w Windows-1250: {e}. Zapisuję w UTF-8.")
-        with open(output_path, "w", encoding="utf-8", newline="") as f:
+        with open(output_path, "w", encoding="utf-8", newline="\r\n") as f:
             f.write(mt940_text)
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Konwerter PDF do MT940")
