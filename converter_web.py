@@ -241,117 +241,55 @@ def _parse_amount_pln_from_line(s: str) -> str:
     m = re.search(r'([\-]?\d[\d\s.,]*\d{2})\s*PLN', s)
     return clean_amount(m.group(1)) if m else "0,00"
 
-def santander_parser(text: str):
+def santander_parser(pdf_path: str):
+    import pdfplumber
+
     account = ""
     saldo_pocz = "0,00"
     saldo_konc = "0,00"
     transactions = []
 
-    # rachunek (IBAN)
-    acc = re.search(r'(PL\d{26})', text.replace(" ", ""))
-    if acc:
-        account = acc.group(1)
+    with pdfplumber.open(pdf_path) as pdf:
+        for page_num, page in enumerate(pdf.pages, start=1):
+            tables = page.extract_tables()
+            for table in tables:
+                for row in table:
+                    # spodziewamy się: [Data operacji..., Opis, Kwota, Saldo]
+                    if not row or len(row) < 3:
+                        continue
 
-    # salda z "Podsumowanie końcowe"
-    m_open = re.search(r'Saldo początkowe na dzień:\s*\n?\s*([0-9\-\.]+)\s*\n?\s*([\d\s.,]+)', text, re.IGNORECASE)
-    m_close = re.search(r'Saldo końcowe na dzień:\s*\n?\s*([0-9\-\.]+)\s*\n?\s*([\d\s.,]+)', text, re.IGNORECASE)
+                    date_raw = row[0] or ""
+                    desc = row[1] or ""
+                    amt_raw = row[2] or ""
 
-    open_date_yymmdd = None
-    close_date_yymmdd = None
-    if m_open:
-        open_date_yymmdd = _parse_date_text_to_yymmdd(m_open.group(1))
-        saldo_pocz = clean_amount(m_open.group(2))
-    if m_close:
-        close_date_yymmdd = _parse_date_text_to_yymmdd(m_close.group(1))
-        saldo_konc = clean_amount(m_close.group(2))
+                    # parsowanie daty
+                    op_date = _parse_date_text_to_yymmdd(
+                        date_raw.replace("Data operacji", "").replace("Data księgowania", "").strip()
+                    )
 
-    # podziel na linie
-    raw_lines = [l.strip() for l in text.splitlines() if l.strip()]
+                    # parsowanie kwoty
+                    amt_clean = amt_raw.replace("\xa0", "").replace(" ", "").replace("PLN", "")
+                    amt_clean = amt_clean.replace(".", "").replace(",", ".")
+                    try:
+                        amount_num = float(amt_clean)
+                    except Exception:
+                        continue
 
-    def is_block_start(idx: int) -> bool:
-        return raw_lines[idx].startswith("Data operacji")
+                    if amount_num != 0.0:
+                        amt_str = "{:.2f}".format(amount_num).replace(".", ",")
+                        entry_mmdd = op_date[2:6]
+                        transactions.append((op_date, amt_str, _strip_spaces(desc), entry_mmdd))
+                        print(f"[DEBUG] Dodano transakcję: {op_date}, {amt_str}, {desc[:60]}")
 
-    i = 0
-    while i < len(raw_lines):
-        if not is_block_start(i):
-            i += 1
-            continue
-
-        # Data operacji
-        op_line = raw_lines[i]
-        m_op = re.search(r'Data operacji\s+([0-9\-\.]+)', op_line)
-        op_date_txt = m_op.group(1) if m_op else ""
-        op_date = _parse_date_text_to_yymmdd(op_date_txt)
-
-        j = i + 1
-        book_date = op_date
-        desc_parts = []
-        amt = None
-
-        while j < len(raw_lines) and not is_block_start(j):
-            ln = raw_lines[j]
-            print(f"[DEBUG] Linia: {ln}")
-
-            # Data księgowania
-            if ln.startswith("Data księgowania"):
-                m_book = re.search(r'Data księgowania\s+([0-9\-\.]+)', ln)
-                if m_book:
-                    book_date_txt = m_book.group(1)
-                    book_date = _parse_date_text_to_yymmdd(book_date_txt)
-                j += 1
-                continue
-
-            # Kwota – klasyczne dopasowanie
-            if amt is None and re.search(r'[-+]?\s*\d[\d\s.,]*\d{2}(?:\s*PLN)?', ln):
-                amt = _parse_amount_pln_from_line(ln)
-                print(f"[DEBUG] Znaleziono kwotę w linii: {amt}")
-                j += 1
-                continue
-
-            # Opis
-            if not ln.startswith("Saldo po operacji") and not ln.startswith("Dokument jest wydrukiem"):
-                desc_parts.append(ln)
-
-            j += 1
-
-        # jeśli brak kwoty – spróbuj znaleźć w opisie
-        if amt is None:
-            desc_text = " ".join(desc_parts)
-            m_amt = re.search(r'[-+]?\d+[.,]\d{2}', desc_text)
-            if m_amt:
-                amt = m_amt.group(0).replace(".", ",")
-                print(f"[DEBUG] Znaleziono kwotę w opisie: {amt}")
-
-        if amt is None:
-            print(f"[DEBUG] Pomijam blok {op_date} – brak kwoty")
-            i = j
-            continue
-
-        desc = _strip_spaces(" ".join(desc_parts))
-        amount_num = normalize_amount_for_calc(amt)
-        amt_clean = clean_amount(amt)
-
-        if amount_num != 0.0:
-            try:
-                entry_mmdd = datetime.strptime(book_date, "%y%m%d").strftime("%m%d")
-            except Exception:
-                entry_mmdd = op_date[2:6]
-            transactions.append((op_date, amt_clean, desc, entry_mmdd))
-            print(f"[DEBUG] Dodano transakcję: data={op_date}, kwota={amt_clean}, opis={desc[:60]}")
-        else:
-            print(f"[DEBUG] Pomijam blok {op_date} – kwota 0,00")
-
-        i = j
-
+    # sort + dedup
     transactions.sort(key=lambda x: (x[0], normalize_amount_for_calc(x[1]), x[2][:80], x[3]))
     transactions = deduplicate_transactions(transactions)
 
-    if not open_date_yymmdd and transactions:
-        open_date_yymmdd = transactions[0][0]
-    if not close_date_yymmdd and transactions:
-        close_date_yymmdd = transactions[-1][0]
+    # fallback daty sald
+    open_date_yymmdd = transactions[0][0] if transactions else datetime.today().strftime("%y%m%d")
+    close_date_yymmdd = transactions[-1][0] if transactions else open_date_yymmdd
 
-    num_20, num_28C = extract_mt940_headers(transactions, text)
+    num_20, num_28C = extract_mt940_headers(transactions, "")
     return account, saldo_pocz, saldo_konc, transactions, num_20, num_28C, open_date_yymmdd, close_date_yymmdd
 
 
