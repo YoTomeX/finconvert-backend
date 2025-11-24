@@ -247,15 +247,17 @@ def santander_parser(text: str):
     saldo_konc = "0,00"
     transactions = []
 
-    # IBAN
+    # Szukamy numeru konta (IBAN)
     acc_match = re.search(r'(PL\d{2}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4})', text)
     if acc_match:
         account = re.sub(r'\s+', '', acc_match.group(1))
 
-    # Salda
+    # Saldo początkowe
     sp_match = re.search(r'SALDO POCZĄTKOWE.*?([\-]?\d[\d\s,\.]+\d{2})', text, re.I)
     if sp_match:
         saldo_pocz = clean_amount(sp_match.group(1))
+
+    # Saldo końcowe
     sk_match = re.search(r'SALDO KOŃCOWE.*?([\-]?\d[\d\s,\.]+\d{2})', text, re.I)
     if sk_match:
         saldo_konc = clean_amount(sk_match.group(1))
@@ -264,21 +266,30 @@ def santander_parser(text: str):
     lines = text.splitlines()
     for i, line in enumerate(lines):
         line = line.strip()
-        # Wariant: data + opis + kwota
-        m = re.match(r'(?P<date>\d{4}-\d{2}-\d{2})\s+(?P<desc>.+?)\s+(?P<amount>[-]?\d[\d\s,\.]+\d{2})\s*PLN', line)
+
+        # Wariant: "Data operacji YYYY-MM-DD ... kwota PLN"
+        m = re.match(r'Data operacji\s+(\d{4}-\d{2}-\d{2}).*?([\-]?\d[\d\s,\.]+\d{2})\s*PLN', line)
         if m:
-            dt = _parse_date_text_to_yymmdd(m.group("date"))
-            amt = clean_amount(m.group("amount"))
-            desc = _strip_spaces(m.group("desc"))
+            dt = _parse_date_text_to_yymmdd(m.group(1))
+            amt = clean_amount(m.group(2))
+            desc = _strip_spaces(line)
             transactions.append((dt, amt, desc, dt[2:6]))
             continue
 
-        # Wariant: opis + kwota (data w poprzedniej linii)
+        # Wariant: linia zaczyna się od daty
+        m2 = re.match(r'(\d{4}-\d{2}-\d{2})\s+(.+?)\s+([\-]?\d[\d\s,\.]+\d{2})\s*PLN', line)
+        if m2:
+            dt = _parse_date_text_to_yymmdd(m2.group(1))
+            amt = clean_amount(m2.group(3))
+            desc = _strip_spaces(m2.group(2))
+            transactions.append((dt, amt, desc, dt[2:6]))
+            continue
+
+        # Wariant: opis + kwota, data w poprzedniej linii
         if "PLN" in line and re.search(r'[-]?\d[\d\s,\.]+\d{2}\s*PLN', line):
-            # szukamy daty w poprzednich liniach
             for back in range(1, 3):
-                if i - back >= 0 and re.match(r'\d{4}-\d{2}-\d{2}', lines[i-back].strip()):
-                    date_raw = lines[i-back].strip().split()[0]
+                if i - back >= 0 and re.search(r'\d{4}-\d{2}-\d{2}', lines[i-back]):
+                    date_raw = re.search(r'(\d{4}-\d{2}-\d{2})', lines[i-back]).group(1)
                     dt = _parse_date_text_to_yymmdd(date_raw)
                     amt_match = re.search(r'([-]?\d[\d\s,\.]+\d{2})\s*PLN', line)
                     if amt_match:
@@ -291,11 +302,12 @@ def santander_parser(text: str):
     transactions.sort(key=lambda x: (x[0], normalize_amount_for_calc(x[1]), x[2][:80], x[3]))
     transactions = deduplicate_transactions(transactions)
 
+    # Daty sald
     open_d = transactions[0][0] if transactions else datetime.today().strftime("%y%m%d")
     close_d = transactions[-1][0] if transactions else open_d
+
     num_20, num_28C = extract_mt940_headers(transactions, text)
     return account, saldo_pocz, saldo_konc, transactions, num_20, num_28C, open_d, close_d
-
 
 def detect_bank(text: str) -> str:
     text_up = text.upper()
