@@ -241,56 +241,54 @@ def _parse_amount_pln_from_line(s: str) -> str:
     m = re.search(r'([\-]?\d[\d\s.,]*\d{2})\s*PLN', s)
     return clean_amount(m.group(1)) if m else "0,00"
 
-def santander_parser(pdf_path: str):
-    import pdfplumber
-
+def santander_parser(text: str):
     account = ""
     saldo_pocz = "0,00"
     saldo_konc = "0,00"
     transactions = []
 
-    with pdfplumber.open(pdf_path) as pdf:
-        for page_num, page in enumerate(pdf.pages, start=1):
-            tables = page.extract_tables()
-            for table in tables:
-                for row in table:
-                    # spodziewamy się: [Data operacji..., Opis, Kwota, Saldo]
-                    if not row or len(row) < 3:
-                        continue
+    # Szukamy numeru konta (IBAN)
+    acc_match = re.search(r'(PL\d{2}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4})', text)
+    if acc_match:
+        account = re.sub(r'\s+', '', acc_match.group(1))
 
-                    date_raw = row[0] or ""
-                    desc = row[1] or ""
-                    amt_raw = row[2] or ""
+    # Saldo początkowe
+    sp_match = re.search(r'SALDO POCZĄTKOWE.*?([\-]?\d[\d\s,\.]+\d{2})', text, re.I)
+    if sp_match:
+        saldo_pocz = clean_amount(sp_match.group(1))
 
-                    # parsowanie daty
-                    op_date = _parse_date_text_to_yymmdd(
-                        date_raw.replace("Data operacji", "").replace("Data księgowania", "").strip()
-                    )
+    # Saldo końcowe
+    sk_match = re.search(r'SALDO KOŃCOWE.*?([\-]?\d[\d\s,\.]+\d{2})', text, re.I)
+    if sk_match:
+        saldo_konc = clean_amount(sk_match.group(1))
 
-                    # parsowanie kwoty
-                    amt_clean = amt_raw.replace("\xa0", "").replace(" ", "").replace("PLN", "")
-                    amt_clean = amt_clean.replace(".", "").replace(",", ".")
-                    try:
-                        amount_num = float(amt_clean)
-                    except Exception:
-                        continue
+    # Regex na transakcje – typowe linie Santander:
+    # "2025-07-31 OPŁATA/PROWIZJA -260,00 PLN -212,29 PLN"
+    # "2025-07-05 TRANSAKCJA KARTĄ -295,15 PLN 994,73 PLN"
+    tx_pattern = re.compile(
+        r'(?P<date>\d{4}-\d{2}-\d{2})\s+'
+        r'(?P<desc>.+?)\s+'
+        r'(?P<amount>[-]?\d[\d\s,\.]+\d{2})\s*PLN',
+        re.I
+    )
 
-                    if amount_num != 0.0:
-                        amt_str = "{:.2f}".format(amount_num).replace(".", ",")
-                        entry_mmdd = op_date[2:6]
-                        transactions.append((op_date, amt_str, _strip_spaces(desc), entry_mmdd))
-                        print(f"[DEBUG] Dodano transakcję: {op_date}, {amt_str}, {desc[:60]}")
+    for m in tx_pattern.finditer(text):
+        dt = _parse_date_text_to_yymmdd(m.group("date"))
+        amt = clean_amount(m.group("amount"))
+        desc = _strip_spaces(m.group("desc"))
+        entry_mmdd = dt[2:6]
+        transactions.append((dt, amt, desc, entry_mmdd))
 
-    # sort + dedup
+    # Sort + dedup
     transactions.sort(key=lambda x: (x[0], normalize_amount_for_calc(x[1]), x[2][:80], x[3]))
     transactions = deduplicate_transactions(transactions)
 
-    # fallback daty sald
-    open_date_yymmdd = transactions[0][0] if transactions else datetime.today().strftime("%y%m%d")
-    close_date_yymmdd = transactions[-1][0] if transactions else open_date_yymmdd
+    # Daty sald
+    open_d = transactions[0][0] if transactions else datetime.today().strftime("%y%m%d")
+    close_d = transactions[-1][0] if transactions else open_d
 
-    num_20, num_28C = extract_mt940_headers(transactions, "")
-    return account, saldo_pocz, saldo_konc, transactions, num_20, num_28C, open_date_yymmdd, close_date_yymmdd
+    num_20, num_28C = extract_mt940_headers(transactions, text)
+    return account, saldo_pocz, saldo_konc, transactions, num_20, num_28C, open_d, close_d
 
 
 def detect_bank(text: str) -> str:
@@ -391,8 +389,8 @@ def main() -> None:
         print("============================\n")
 
     if bank_name == "Santander":
-        #account, sp, sk, tx, num_20, num_28C, open_d, close_d = santander_parser(text)
-        account, sp, sk, tx, num_20, num_28C, open_d, close_d = santander_parser(args.input_pdf)
+        account, sp, sk, tx, num_20, num_28C, open_d, close_d = santander_parser(text)
+        #account, sp, sk, tx, num_20, num_28C, open_d, close_d = santander_parser(args.input_pdf)
     elif bank_name == "Pekao":
         account, sp, sk, tx, num_20, num_28C, open_d, close_d = pekao_parser(text)
     else:
