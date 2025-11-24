@@ -74,9 +74,11 @@ def clean_amount(amount) -> str:
     return "{:.2f}".format(val).replace('.', ',')
 
 
-def format_mt940_amount(amount) -> str:
+def format_mt940_amount(amount: str) -> str:
     val = normalize_amount_for_calc(amount)
-    return "{:.2f}".format(val).replace('.', ',')
+    # zawsze dodatnia wartość, bo znak obsługuje flaga C/D
+    return "{:.2f}".format(abs(val)).replace('.', ',')
+
 
 
 def format_account_for_25(acc_raw) -> str:
