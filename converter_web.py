@@ -301,10 +301,10 @@ def santander_parser(text: str):
                 j += 1
                 continue
 
-            # Kwota – dopasuj liczby z przecinkiem/kropką, nawet bez PLN
+            # Kwota – klasyczne dopasowanie
             if amt is None and re.search(r'[-+]?\s*\d[\d\s.,]*\d{2}(?:\s*PLN)?', ln):
                 amt = _parse_amount_pln_from_line(ln)
-                print(f"[DEBUG] Znaleziono kwotę: {amt}")
+                print(f"[DEBUG] Znaleziono kwotę w linii: {amt}")
                 j += 1
                 continue
 
@@ -313,6 +313,14 @@ def santander_parser(text: str):
                 desc_parts.append(ln)
 
             j += 1
+
+        # jeśli brak kwoty – spróbuj znaleźć w opisie
+        if amt is None:
+            desc_text = " ".join(desc_parts)
+            m_amt = re.search(r'[-+]?\d+[.,]\d{2}', desc_text)
+            if m_amt:
+                amt = m_amt.group(0).replace(".", ",")
+                print(f"[DEBUG] Znaleziono kwotę w opisie: {amt}")
 
         if amt is None:
             print(f"[DEBUG] Pomijam blok {op_date} – brak kwoty")
