@@ -391,7 +391,8 @@ def main() -> None:
         print("============================\n")
 
     if bank_name == "Santander":
-        account, sp, sk, tx, num_20, num_28C, open_d, close_d = santander_parser(text)
+        #account, sp, sk, tx, num_20, num_28C, open_d, close_d = santander_parser(text)
+        account, sp, sk, tx, num_20, num_28C, open_d, close_d = santander_parser(args.input_pdf)
     elif bank_name == "Pekao":
         account, sp, sk, tx, num_20, num_28C, open_d, close_d = pekao_parser(text)
     else:
