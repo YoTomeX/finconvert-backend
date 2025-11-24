@@ -252,49 +252,34 @@ def santander_parser(text: str):
     if acc_match:
         account = re.sub(r'\s+', '', acc_match.group(1))
 
-    # Salda
-    sp_match = re.search(r'SALDO POCZĄTKOWE.*?([\-]?\d[\d\s,\.]+\d{2})', text, re.I)
-    if sp_match:
-        saldo_pocz = clean_amount(sp_match.group(1))
-    sk_match = re.search(r'SALDO KOŃCOWE.*?([\-]?\d[\d\s,\.]+\d{2})', text, re.I)
-    if sk_match:
-        saldo_konc = clean_amount(sk_match.group(1))
-
     lines = text.splitlines()
-    for i, line in enumerate(lines):
+    current_date = None
+    current_desc = []
+
+    for line in lines:
         line = line.strip()
 
-        # Wariant 1: "Data operacji YYYY-MM-DD ... kwota PLN"
-        m = re.match(r'Data operacji\s+(\d{4}-\d{2}-\d{2}).*?([\-]?\d[\d\s,\.]+\d{2})\s*PLN', line)
-        if m:
-            dt = _parse_date_text_to_yymmdd(m.group(1))
-            amt = clean_amount(m.group(2))
-            desc = _strip_spaces(line)
-            transactions.append((dt, amt, desc, dt[2:6]))
+        # Jeśli linia zawiera datę operacji
+        m_date = re.search(r'(\d{4}-\d{2}-\d{2})', line)
+        if m_date:
+            current_date = _parse_date_text_to_yymmdd(m_date.group(1))
+            current_desc = [line]
             continue
 
-        # Wariant 2: linia zaczyna się od daty
-        m2 = re.match(r'(\d{4}-\d{2}-\d{2})\s+(.+?)\s+([\-]?\d[\d\s,\.]+\d{2})\s*PLN', line)
-        if m2:
-            dt = _parse_date_text_to_yymmdd(m2.group(1))
-            amt = clean_amount(m2.group(3))
-            desc = _strip_spaces(m2.group(2))
-            transactions.append((dt, amt, desc, dt[2:6]))
+        # Jeśli linia zawiera kwotę
+        m_amt = re.search(r'([-]?\d[\d\s,\.]+\d{2})\s*PLN', line)
+        if m_amt and current_date:
+            amt = clean_amount(m_amt.group(1))
+            current_desc.append(line)
+            desc = _strip_spaces(" ".join(current_desc))
+            transactions.append((current_date, amt, desc, current_date[2:6]))
+            current_date = None
+            current_desc = []
             continue
 
-        # Wariant 3: linia zawiera słowa kluczowe + kwotę, data w poprzedniej linii
-        if any(x in line.upper() for x in ["PRZELEW", "UZNANIE", "TRANSAKCJA", "OPŁATA", "PROWIZJA"]) and "PLN" in line:
-            amt_match = re.search(r'([-]?\d[\d\s,\.]+\d{2})\s*PLN', line)
-            if amt_match:
-                # szukamy daty wstecz
-                for back in range(1, 3):
-                    if i - back >= 0 and re.search(r'\d{4}-\d{2}-\d{2}', lines[i-back]):
-                        date_raw = re.search(r'(\d{4}-\d{2}-\d{2})', lines[i-back]).group(1)
-                        dt = _parse_date_text_to_yymmdd(date_raw)
-                        amt = clean_amount(amt_match.group(1))
-                        desc = _strip_spaces(line)
-                        transactions.append((dt, amt, desc, dt[2:6]))
-                        break
+        # Jeśli jesteśmy w trakcie opisu transakcji
+        if current_date:
+            current_desc.append(line)
 
     # sort + dedup
     transactions.sort(key=lambda x: (x[0], normalize_amount_for_calc(x[1]), x[2][:80], x[3]))
