@@ -247,46 +247,52 @@ def santander_parser(text: str):
     saldo_konc = "0,00"
     transactions = []
 
-    # Szukamy numeru konta (IBAN)
+    # IBAN
     acc_match = re.search(r'(PL\d{2}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4})', text)
     if acc_match:
         account = re.sub(r'\s+', '', acc_match.group(1))
 
-    # Saldo początkowe
+    # Salda
     sp_match = re.search(r'SALDO POCZĄTKOWE.*?([\-]?\d[\d\s,\.]+\d{2})', text, re.I)
     if sp_match:
         saldo_pocz = clean_amount(sp_match.group(1))
-
-    # Saldo końcowe
     sk_match = re.search(r'SALDO KOŃCOWE.*?([\-]?\d[\d\s,\.]+\d{2})', text, re.I)
     if sk_match:
         saldo_konc = clean_amount(sk_match.group(1))
 
-    # Regex na transakcje – typowe linie Santander:
-    # "2025-07-31 OPŁATA/PROWIZJA -260,00 PLN -212,29 PLN"
-    # "2025-07-05 TRANSAKCJA KARTĄ -295,15 PLN 994,73 PLN"
-    tx_pattern = re.compile(
-        r'(?P<date>\d{4}-\d{2}-\d{2})\s+'
-        r'(?P<desc>.+?)\s+'
-        r'(?P<amount>[-]?\d[\d\s,\.]+\d{2})\s*PLN',
-        re.I
-    )
+    # Parsowanie transakcji linia po linii
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        line = line.strip()
+        # Wariant: data + opis + kwota
+        m = re.match(r'(?P<date>\d{4}-\d{2}-\d{2})\s+(?P<desc>.+?)\s+(?P<amount>[-]?\d[\d\s,\.]+\d{2})\s*PLN', line)
+        if m:
+            dt = _parse_date_text_to_yymmdd(m.group("date"))
+            amt = clean_amount(m.group("amount"))
+            desc = _strip_spaces(m.group("desc"))
+            transactions.append((dt, amt, desc, dt[2:6]))
+            continue
 
-    for m in tx_pattern.finditer(text):
-        dt = _parse_date_text_to_yymmdd(m.group("date"))
-        amt = clean_amount(m.group("amount"))
-        desc = _strip_spaces(m.group("desc"))
-        entry_mmdd = dt[2:6]
-        transactions.append((dt, amt, desc, entry_mmdd))
+        # Wariant: opis + kwota (data w poprzedniej linii)
+        if "PLN" in line and re.search(r'[-]?\d[\d\s,\.]+\d{2}\s*PLN', line):
+            # szukamy daty w poprzednich liniach
+            for back in range(1, 3):
+                if i - back >= 0 and re.match(r'\d{4}-\d{2}-\d{2}', lines[i-back].strip()):
+                    date_raw = lines[i-back].strip().split()[0]
+                    dt = _parse_date_text_to_yymmdd(date_raw)
+                    amt_match = re.search(r'([-]?\d[\d\s,\.]+\d{2})\s*PLN', line)
+                    if amt_match:
+                        amt = clean_amount(amt_match.group(1))
+                        desc = _strip_spaces(line)
+                        transactions.append((dt, amt, desc, dt[2:6]))
+                    break
 
-    # Sort + dedup
+    # sort + dedup
     transactions.sort(key=lambda x: (x[0], normalize_amount_for_calc(x[1]), x[2][:80], x[3]))
     transactions = deduplicate_transactions(transactions)
 
-    # Daty sald
     open_d = transactions[0][0] if transactions else datetime.today().strftime("%y%m%d")
     close_d = transactions[-1][0] if transactions else open_d
-
     num_20, num_28C = extract_mt940_headers(transactions, text)
     return account, saldo_pocz, saldo_konc, transactions, num_20, num_28C, open_d, close_d
 
