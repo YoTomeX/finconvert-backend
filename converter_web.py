@@ -253,8 +253,8 @@ def santander_parser(text: str):
         account = acc.group(1)
 
     # salda z "Podsumowanie końcowe"
-    m_open = re.search(r'Saldo początkowe na dzień:\s*\n?\s*([0-9\-\.]+)\s*\n?\s*([\d\s.,]+)\s*PLN', text, re.IGNORECASE)
-    m_close = re.search(r'Saldo końcowe na dzień:\s*\n?\s*([0-9\-\.]+)\s*\n?\s*([\d\s.,]+)\s*PLN', text, re.IGNORECASE)
+    m_open = re.search(r'Saldo początkowe na dzień:\s*\n?\s*([0-9\-\.]+)\s*\n?\s*([\d\s.,]+)', text, re.IGNORECASE)
+    m_close = re.search(r'Saldo końcowe na dzień:\s*\n?\s*([0-9\-\.]+)\s*\n?\s*([\d\s.,]+)', text, re.IGNORECASE)
 
     open_date_yymmdd = None
     close_date_yymmdd = None
@@ -266,46 +266,30 @@ def santander_parser(text: str):
         saldo_konc = clean_amount(m_close.group(2))
 
     # podziel na linie
-    raw_lines = [l.rstrip() for l in text.splitlines()]
-
-    # preprocessing: scal linie z kwotą i PLN
-    merged_lines = []
-    skip_next = False
-    for idx, ln in enumerate(raw_lines):
-        if skip_next:
-            skip_next = False
-            continue
-        if re.match(r'.*\d+[.,]\d{2}$', ln.strip()) and idx+1 < len(raw_lines) and raw_lines[idx+1].strip() == "PLN":
-            merged_lines.append(ln.strip() + " PLN")
-            skip_next = True
-        else:
-            merged_lines.append(ln)
-    lines = merged_lines
-    n = len(lines)
+    raw_lines = [l.strip() for l in text.splitlines() if l.strip()]
 
     def is_block_start(idx: int) -> bool:
-        return lines[idx].startswith("Data operacji")
+        return raw_lines[idx].startswith("Data operacji")
 
     i = 0
-    while i < n:
+    while i < len(raw_lines):
         if not is_block_start(i):
             i += 1
             continue
 
         # Data operacji
-        op_line = lines[i]
+        op_line = raw_lines[i]
         m_op = re.search(r'Data operacji\s+([0-9\-\.]+)', op_line)
         op_date_txt = m_op.group(1) if m_op else ""
         op_date = _parse_date_text_to_yymmdd(op_date_txt)
 
-        # Przeskanuj blok do następnej "Data operacji"
         j = i + 1
-        book_date = op_date  # fallback
+        book_date = op_date
         desc_parts = []
         amt = None
 
-        while j < n and not is_block_start(j):
-            ln = lines[j].strip()
+        while j < len(raw_lines) and not is_block_start(j):
+            ln = raw_lines[j]
             print(f"[DEBUG] Linia: {ln}")
 
             # Data księgowania
@@ -317,20 +301,19 @@ def santander_parser(text: str):
                 j += 1
                 continue
 
-            # Kwota (rozszerzony regex)
-            if amt is None and re.search(r'(Kwota[:\-]?\s*)?[-+]?\s*\d[\d\s.,]*\d{2}\s*PLN', ln):
+            # Kwota – dopasuj liczby z przecinkiem/kropką, nawet bez PLN
+            if amt is None and re.search(r'[-+]?\s*\d[\d\s.,]*\d{2}(?:\s*PLN)?', ln):
                 amt = _parse_amount_pln_from_line(ln)
                 print(f"[DEBUG] Znaleziono kwotę: {amt}")
                 j += 1
                 continue
 
-            # Opis – zbierz wszystko sensowne
-            if ln and not ln.startswith("Saldo po operacji") and not ln.startswith("Dokument jest wydrukiem"):
+            # Opis
+            if not ln.startswith("Saldo po operacji") and not ln.startswith("Dokument jest wydrukiem"):
                 desc_parts.append(ln)
 
             j += 1
 
-        # jeśli brak kwoty – pomijamy blok
         if amt is None:
             print(f"[DEBUG] Pomijam blok {op_date} – brak kwoty")
             i = j
@@ -352,7 +335,6 @@ def santander_parser(text: str):
 
         i = j
 
-    # sort + dedup
     transactions.sort(key=lambda x: (x[0], normalize_amount_for_calc(x[1]), x[2][:80], x[3]))
     transactions = deduplicate_transactions(transactions)
 
