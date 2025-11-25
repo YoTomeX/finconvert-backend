@@ -251,6 +251,7 @@ def _parse_date_text_to_yymmdd(s: str) -> str:
 def _parse_amount_pln_from_line(s: str) -> str:
     m = re.search(r'([\-]?\d[\d\s.,]*\d{2})\s*PLN', s)
     return clean_amount(m.group(1)) if m else "0,00"
+    
 def santander_parser(text: str):
     account = ""
     saldo_pocz = "0,00"
@@ -364,8 +365,6 @@ def build_mt940(account: str, saldo_poczatkowe: str, saldo_koncowe: str,
     # Saldo początkowe :60F:
     start_date = open_date_yymmdd or (transactions[0][0] if transactions else datetime.today().strftime("%y%m%d"))
     lines.append(f":60F:{format_cd_flag(saldo_poczatkowe)}{start_date}PLN{format_mt940_amount(saldo_poczatkowe)}")
-
-    # Debug saldo początkowe
     print(f"[DEBUG] Saldo początkowe: {saldo_poczatkowe} (data {start_date})")
 
     # Transakcje :61: + :86:
@@ -384,8 +383,6 @@ def build_mt940(account: str, saldo_poczatkowe: str, saldo_koncowe: str,
     end_date = close_date_yymmdd or (transactions[-1][0] if transactions else start_date)
     lines.append(f":62F:{format_cd_flag(saldo_koncowe)}{end_date}PLN{format_mt940_amount(saldo_koncowe)}")
     lines.append(f":64:{format_cd_flag(saldo_koncowe)}{end_date}PLN{format_mt940_amount(saldo_koncowe)}")
-
-    # Debug saldo końcowe
     print(f"[DEBUG] Saldo końcowe: {saldo_koncowe} (data {end_date})")
 
     lines.append("-")
