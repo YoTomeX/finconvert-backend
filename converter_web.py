@@ -249,11 +249,33 @@ def santander_parser(text: str):
     saldo_konc = "0,00"
     transactions = []
 
-    # IBAN
-    acc_match = re.search(r'(PL\d{2}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4})', text)
-    if acc_match:
-        account = re.sub(r'\s+', '', acc_match.group(1))
+    # Najpierw szukamy numeru konta w sekcji "Produkty"
+    prod_match = re.search(
+        r'Produkty:\s*(\d{2}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4})',
+        text
+    )
+    if prod_match:
+        account = re.sub(r'\s+', '', prod_match.group(1))
+    else:
+        # fallback: pierwszy IBAN w tekście
+        acc_match = re.search(
+            r'(PL\d{2}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4})',
+            text
+        )
+        if acc_match:
+            account = re.sub(r'\s+', '', acc_match.group(1))
 
+    # Saldo początkowe
+    sp_match = re.search(r'SALDO POCZĄTKOWE.*?([\-]?\d[\d\s,\.]+\d{2})', text, re.I)
+    if sp_match:
+        saldo_pocz = clean_amount(sp_match.group(1))
+
+    # Saldo końcowe
+    sk_match = re.search(r'SALDO KOŃCOWE.*?([\-]?\d[\d\s,\.]+\d{2})', text, re.I)
+    if sk_match:
+        saldo_konc = clean_amount(sk_match.group(1))
+
+    # Parsowanie transakcji linia po linii
     lines = text.splitlines()
     current_date = None
     current_desc = []
@@ -287,8 +309,10 @@ def santander_parser(text: str):
     transactions.sort(key=lambda x: (x[0], normalize_amount_for_calc(x[1]), x[2][:80], x[3]))
     transactions = deduplicate_transactions(transactions)
 
+    # Daty sald
     open_d = transactions[0][0] if transactions else datetime.today().strftime("%y%m%d")
     close_d = transactions[-1][0] if transactions else open_d
+
     num_20, num_28C = extract_mt940_headers(transactions, text)
     return account, saldo_pocz, saldo_konc, transactions, num_20, num_28C, open_d, close_d
 
