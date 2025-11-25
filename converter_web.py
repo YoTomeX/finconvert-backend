@@ -251,7 +251,6 @@ def _parse_date_text_to_yymmdd(s: str) -> str:
 def _parse_amount_pln_from_line(s: str) -> str:
     m = re.search(r'([\-]?\d[\d\s.,]*\d{2})\s*PLN', s)
     return clean_amount(m.group(1)) if m else "0,00"
-
 def santander_parser(text: str):
     account = ""
     saldo_pocz = "0,00"
@@ -267,10 +266,12 @@ def santander_parser(text: str):
         if acc_match:
             account = re.sub(r'\s+', '', acc_match.group(1))
 
-    # Salda z PDF
+    # Saldo początkowe
     sp_match = re.search(r'SALDO POCZĄTKOWE.*?([\-]?\d[\d\s,\.]+\d{2})', text, re.I)
     if sp_match:
         saldo_pocz = clean_amount(sp_match.group(1))
+
+    # Saldo końcowe
     sk_match = re.search(r'SALDO KOŃCOWE.*?([\-]?\d[\d\s,\.]+\d{2})', text, re.I)
     if sk_match:
         saldo_konc = clean_amount(sk_match.group(1))
@@ -307,9 +308,11 @@ def santander_parser(text: str):
         if current_date:
             current_desc.append(line)
 
+    # sort + dedup
     transactions.sort(key=lambda x: (x[0], normalize_amount_for_calc(x[1]), x[2][:80], x[3]))
     transactions = deduplicate_transactions(transactions)
 
+    # Daty sald
     open_d = transactions[0][0] if transactions else datetime.today().strftime("%y%m%d")
     close_d = transactions[-1][0] if transactions else open_d
 
@@ -361,24 +364,33 @@ def build_mt940(account: str, saldo_poczatkowe: str, saldo_koncowe: str,
     # Saldo początkowe :60F:
     start_date = open_date_yymmdd or (transactions[0][0] if transactions else datetime.today().strftime("%y%m%d"))
     lines.append(f":60F:{format_cd_flag(saldo_poczatkowe)}{start_date}PLN{format_mt940_amount(saldo_poczatkowe)}")
-    
+
+    # Debug saldo początkowe
+    print(f"[DEBUG] Saldo początkowe: {saldo_poczatkowe} (data {start_date})")
+
     # Transakcje :61: + :86:
-    if transactions:
-        for d, a, desc, mmdd in transactions:
-            if normalize_amount_for_calc(a) == 0.0:
-                continue
-            cd = format_cd_flag(a)
-            amt = format_mt940_amount(a)
-            gvc = map_transaction_code(desc)
-            lines.append(f":61:{d}{cd}{amt}{gvc}//NONREF")
-            lines.append(build_86_segments(desc))
+    for d, a, desc, mmdd in transactions:
+        if normalize_amount_for_calc(a) == 0.0:
+            continue
+        cd = format_cd_flag(a)
+        amt = format_mt940_amount(a)
+        gvc = map_transaction_code(desc)
+        lines.append(f":61:{d}{cd}{amt}{gvc}//NONREF")
+        lines.append(build_86_segments(desc))
+
+    print(f"[DEBUG] Liczba transakcji zapisanych: {len([l for l in lines if l.startswith(':61:')])}")
 
     # Saldo końcowe :62F: i :64:
     end_date = close_date_yymmdd or (transactions[-1][0] if transactions else start_date)
     lines.append(f":62F:{format_cd_flag(saldo_koncowe)}{end_date}PLN{format_mt940_amount(saldo_koncowe)}")
     lines.append(f":64:{format_cd_flag(saldo_koncowe)}{end_date}PLN{format_mt940_amount(saldo_koncowe)}")
+
+    # Debug saldo końcowe
+    print(f"[DEBUG] Saldo końcowe: {saldo_koncowe} (data {end_date})")
+
     lines.append("-")
     return "\r\n".join(lines)
+
 
 
 def save_mt940_file(mt940_text: str, output_path: str) -> None:
