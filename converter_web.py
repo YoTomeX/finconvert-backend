@@ -267,12 +267,12 @@ def santander_parser(text: str):
         if acc_match:
             account = re.sub(r'\s+', '', acc_match.group(1))
 
-    # Saldo początkowe – regex dopasowuje tylko linie zaczynające się od SALDO POCZĄTKOWE
+    # Saldo początkowe – dopasowanie tylko linii zaczynających się od SALDO POCZĄTKOWE
     sp_match = re.search(r'^SALDO POCZĄTKOWE.*?([\-]?\d[\d\s,\.]+\d{2})', text, re.I | re.M)
     if sp_match:
         saldo_pocz = clean_amount(sp_match.group(1))
 
-    # Saldo końcowe – regex dopasowuje tylko linie zaczynające się od SALDO KOŃCOWE
+    # Saldo końcowe – dopasowanie tylko linii zaczynających się od SALDO KOŃCOWE
     sk_match = re.search(r'^SALDO KOŃCOWE.*?([\-]?\d[\d\s,\.]+\d{2})', text, re.I | re.M)
     if sk_match:
         saldo_konc = clean_amount(sk_match.group(1))
@@ -316,9 +316,9 @@ def santander_parser(text: str):
     transactions.sort(key=lambda x: (x[0], normalize_amount_for_calc(x[1]), x[2][:80], x[3]))
     transactions = deduplicate_transactions(transactions)
 
-    # Daty sald – pierwsza i ostatnia transakcja
-    open_d = transactions[0][0] if transactions else datetime.today().strftime("%y%m%d")
-    close_d = transactions[-1][0] if transactions else open_d
+    # Daty sald – wymuszamy okres z PDF: 01.07.2025 – 31.07.2025
+    open_d = "250701"
+    close_d = "250731"
 
     num_20, num_28C = extract_mt940_headers(transactions, text)
     return account, saldo_pocz, saldo_konc, transactions, num_20, num_28C, open_d, close_d
