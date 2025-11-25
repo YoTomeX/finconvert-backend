@@ -267,13 +267,13 @@ def santander_parser(text: str):
         if acc_match:
             account = re.sub(r'\s+', '', acc_match.group(1))
 
-    # Saldo początkowe
-    sp_match = re.search(r'SALDO POCZĄTKOWE.*?([\-]?\d[\d\s,\.]+\d{2})', text, re.I)
+    # Saldo początkowe – regex dopasowuje tylko linie zaczynające się od SALDO POCZĄTKOWE
+    sp_match = re.search(r'^SALDO POCZĄTKOWE.*?([\-]?\d[\d\s,\.]+\d{2})', text, re.I | re.M)
     if sp_match:
         saldo_pocz = clean_amount(sp_match.group(1))
 
-    # Saldo końcowe
-    sk_match = re.search(r'SALDO KOŃCOWE.*?([\-]?\d[\d\s,\.]+\d{2})', text, re.I)
+    # Saldo końcowe – regex dopasowuje tylko linie zaczynające się od SALDO KOŃCOWE
+    sk_match = re.search(r'^SALDO KOŃCOWE.*?([\-]?\d[\d\s,\.]+\d{2})', text, re.I | re.M)
     if sk_match:
         saldo_konc = clean_amount(sk_match.group(1))
 
@@ -284,21 +284,24 @@ def santander_parser(text: str):
 
     for line in lines:
         line = line.strip()
+
+        # Jeśli linia zawiera datę operacji
         m_date = re.search(r'(\d{4}-\d{2}-\d{2})', line)
         if m_date:
             current_date = _parse_date_text_to_yymmdd(m_date.group(1))
             current_desc = [line]
             continue
 
+        # Jeśli linia zawiera kwotę
         m_amt = re.search(r'([-]?\d[\d\s,\.]+\d{2})\s*PLN', line)
         if m_amt and current_date:
             amt = clean_amount(m_amt.group(1))
             current_desc.append(line)
             desc = _strip_spaces(" ".join(current_desc))
 
-            # filtr pseudo-transakcji
+            # filtr pseudo-transakcji – sprawdzamy każdą linię opisu
             if any(marker in desc.upper() for marker in SUMMARY_MARKERS):
-                logging.debug(f"Odrzucono pseudo-transakcję: {desc}")
+                logging.debug(f"[DROP] Odrzucono pseudo-transakcję: {desc}")
             else:
                 transactions.append((current_date, amt, desc, current_date[2:6]))
 
@@ -313,7 +316,7 @@ def santander_parser(text: str):
     transactions.sort(key=lambda x: (x[0], normalize_amount_for_calc(x[1]), x[2][:80], x[3]))
     transactions = deduplicate_transactions(transactions)
 
-    # Daty sald
+    # Daty sald – pierwsza i ostatnia transakcja
     open_d = transactions[0][0] if transactions else datetime.today().strftime("%y%m%d")
     close_d = transactions[-1][0] if transactions else open_d
 
