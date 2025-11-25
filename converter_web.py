@@ -10,6 +10,15 @@ import os
 from datetime import datetime
 import pdfplumber
 
+#lista markerów do odrzucania pseudo‑transakcji
+SUMMARY_MARKERS = [
+    "/00DATA WYDRUKU",
+    "PODSUMOWANIE OGOLNE",
+    "PODSUMOWANIE KONCOWE",
+    "PODSUMOWANIE KOŃCOWE",
+]
+
+
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
 
@@ -249,67 +258,58 @@ def santander_parser(text: str):
     saldo_konc = "0,00"
     transactions = []
 
-    # Najpierw szukamy numeru konta w sekcji "Produkty"
-    prod_match = re.search(
-        r'Produkty:\s*(\d{2}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4})',
-        text
-    )
+    # Numer konta
+    prod_match = re.search(r'Produkty:\s*(\d{2}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4})', text)
     if prod_match:
         account = re.sub(r'\s+', '', prod_match.group(1))
     else:
-        # fallback: pierwszy IBAN w tekście
-        acc_match = re.search(
-            r'(PL\d{2}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4})',
-            text
-        )
+        acc_match = re.search(r'(PL\d{2}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4})', text)
         if acc_match:
             account = re.sub(r'\s+', '', acc_match.group(1))
 
-    # Saldo początkowe
+    # Salda z PDF
     sp_match = re.search(r'SALDO POCZĄTKOWE.*?([\-]?\d[\d\s,\.]+\d{2})', text, re.I)
     if sp_match:
         saldo_pocz = clean_amount(sp_match.group(1))
-
-    # Saldo końcowe
     sk_match = re.search(r'SALDO KOŃCOWE.*?([\-]?\d[\d\s,\.]+\d{2})', text, re.I)
     if sk_match:
         saldo_konc = clean_amount(sk_match.group(1))
 
-    # Parsowanie transakcji linia po linii
+    # Parsowanie transakcji
     lines = text.splitlines()
     current_date = None
     current_desc = []
 
     for line in lines:
         line = line.strip()
-
-        # Jeśli linia zawiera datę operacji
         m_date = re.search(r'(\d{4}-\d{2}-\d{2})', line)
         if m_date:
             current_date = _parse_date_text_to_yymmdd(m_date.group(1))
             current_desc = [line]
             continue
 
-        # Jeśli linia zawiera kwotę
         m_amt = re.search(r'([-]?\d[\d\s,\.]+\d{2})\s*PLN', line)
         if m_amt and current_date:
             amt = clean_amount(m_amt.group(1))
             current_desc.append(line)
             desc = _strip_spaces(" ".join(current_desc))
-            transactions.append((current_date, amt, desc, current_date[2:6]))
+
+            # filtr pseudo-transakcji
+            if any(marker in desc.upper() for marker in SUMMARY_MARKERS):
+                logging.debug(f"Odrzucono pseudo-transakcję: {desc}")
+            else:
+                transactions.append((current_date, amt, desc, current_date[2:6]))
+
             current_date = None
             current_desc = []
             continue
 
-        # Jeśli jesteśmy w trakcie opisu transakcji
         if current_date:
             current_desc.append(line)
 
-    # sort + dedup
     transactions.sort(key=lambda x: (x[0], normalize_amount_for_calc(x[1]), x[2][:80], x[3]))
     transactions = deduplicate_transactions(transactions)
 
-    # Daty sald
     open_d = transactions[0][0] if transactions else datetime.today().strftime("%y%m%d")
     close_d = transactions[-1][0] if transactions else open_d
 
@@ -361,7 +361,7 @@ def build_mt940(account: str, saldo_poczatkowe: str, saldo_koncowe: str,
     # Saldo początkowe :60F:
     start_date = open_date_yymmdd or (transactions[0][0] if transactions else datetime.today().strftime("%y%m%d"))
     lines.append(f":60F:{format_cd_flag(saldo_poczatkowe)}{start_date}PLN{format_mt940_amount(saldo_poczatkowe)}")
-
+    
     # Transakcje :61: + :86:
     if transactions:
         for d, a, desc, mmdd in transactions:
@@ -455,6 +455,11 @@ def main() -> None:
     save_mt940_file(mt940, args.output_mt940)
     print(f"Plik zapisany: {os.path.exists(args.output_mt940)} {args.output_mt940}")
     print(f"✅ Konwersja zakończona! Plik zapisany jako {args.output_mt940} (kodowanie WINDOWS-1250/UTF-8, separator CRLF).")
+    
+    print(f"Saldo początkowe z PDF: {sp}")
+    print(f"Saldo końcowe z PDF: {sk}")
+    print(f"Liczba transakcji po filtracji: {len(tx)}")
+
 
 
 if __name__ == "__main__":
