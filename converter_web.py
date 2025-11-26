@@ -273,7 +273,7 @@ def santander_parser(text: str):
     if prod_match:
         account = re.sub(r'\s+', '', prod_match.group(1))
 
-    # Saldo początkowe / końcowe
+    # Salda
     sp_match = re.search(r'Saldo początkowe.*?([\-]?\d[\d\s,\.]+\d{2})\s*PLN', text, re.I)
     if sp_match:
         saldo_pocz = clean_amount(sp_match.group(1))
@@ -283,22 +283,22 @@ def santander_parser(text: str):
 
     # Parsowanie transakcji blokami
     lines = [l.strip() for l in text.splitlines()]
-    transactions = []
     current_date = None
     desc_lines = []
 
     for line in lines:
         # początek transakcji
-        if line.startswith("Data operacji"):
+        if line.upper().startswith("DATA OPERACJI"):
             m = re.search(r'(\d{4}-\d{2}-\d{2})', line)
             if m:
                 current_date = _parse_date_text_to_yymmdd(m.group(1))
                 desc_lines = []
             continue
 
-        # opis
         if current_date:
-            if line.startswith(("Z rachunek", "Na rachunek", "Tytuł", "Numer karty")) or "FV" in line or "VAT" in line or "ZUS" in line:
+            # zbieraj opis
+            if any(line.upper().startswith(x) for x in ["Z RACHUNEK", "NA RACHUNEK", "TYTUŁ", "NUMER KARTY"]) \
+               or "FV" in line or "VAT" in line or "ZUS" in line:
                 desc_lines.append(line)
 
             # kwota transakcji (pierwsza linia z PLN, ale nie saldo)
@@ -312,7 +312,6 @@ def santander_parser(text: str):
                     current_date = None
                     desc_lines = []
 
-    # deduplikacja bez sortowania
     transactions = deduplicate_transactions(transactions)
 
     # Okres z PDF (lipiec 2025)
