@@ -287,33 +287,34 @@ def santander_parser(text: str):
     desc_lines = []
 
     for line in lines:
-    # pomiń podsumowania i datę wydruku
-    if any(x in line.upper() for x in ["DATA WYDRUKU", "WPLYWY LICZBA OPERACJI", "SUMA WPLYWOW", "PODSUMOWANIE"]):
-        continue
+        # pomiń podsumowania i datę wydruku
+        if any(x in line.upper() for x in ["DATA WYDRUKU", "WPLYWY LICZBA OPERACJI", "SUMA WPLYWOW", "PODSUMOWANIE"]):
+            continue
 
-    # początek transakcji – tylko linie zaczynające się od "Data operacji"
-    m = re.search(r'^Data operacji.*?(\d{4}-\d{2}-\d{2})', line)
-    if m:
-        current_date = _parse_date_text_to_yymmdd(m.group(1))
-        desc_lines = []
-        continue
+        # początek transakcji – tylko linie zaczynające się od "Data operacji"
+        m = re.search(r'^Data operacji.*?(\d{4}-\d{2}-\d{2})', line)
+        if m:
+            current_date = _parse_date_text_to_yymmdd(m.group(1))
+            desc_lines = []
+            continue
 
-    if current_date:
-        # zbieraj opis (bez frazy "Data operacji")
-        if any(line.upper().startswith(x) for x in ["Z RACHUNEK", "NA RACHUNEK", "TYTUŁ", "NUMER KARTY"]) \
-           or "FV" in line or "VAT" in line or "ZUS" in line:
-            desc_lines.append(line)
+        if current_date:
+            # zbieraj opis
+            if any(line.upper().startswith(x) for x in ["Z RACHUNEK", "NA RACHUNEK", "TYTUŁ", "NUMER KARTY"]) \
+               or "FV" in line or "VAT" in line or "ZUS" in line:
+                desc_lines.append(line)
 
-        # kwota transakcji – tylko pierwsza kwota PLN, ignoruj saldo po operacji
-        if "PLN" in line and "SALDO PO OPERACJI" not in line.upper():
-            m_amt = re.search(r'([-]?\d[\d\s,\.]+\d{2})\s*PLN', line)
-            if m_amt:
-                amt = clean_amount(m_amt.group(1))
-                desc = _strip_spaces(" ".join(desc_lines + [line]))
-                if not any(marker in desc.upper() for marker in SUMMARY_MARKERS):
-                    transactions.append((current_date, amt, desc, current_date[2:6]))
-                current_date = None
-                desc_lines = []
+            # kwota transakcji – tylko pierwsza kwota PLN, ignoruj saldo po operacji
+            if "PLN" in line and "SALDO PO OPERACJI" not in line.upper():
+                m_amt = re.search(r'([-]?\d[\d\s,\.]+\d{2})\s*PLN', line)
+                if m_amt:
+                    amt = clean_amount(m_amt.group(1))
+                    desc = _strip_spaces(" ".join(desc_lines + [line]))
+                    if not any(marker in desc.upper() for marker in SUMMARY_MARKERS):
+                        transactions.append((current_date, amt, desc, current_date[2:6]))
+                    current_date = None
+                    desc_lines = []
+
 
 
     transactions = deduplicate_transactions(transactions)
