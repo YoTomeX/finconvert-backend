@@ -264,12 +264,16 @@ def santander_parser(text: str):
     if prod_match:
         account = re.sub(r'\s+', '', prod_match.group(1))
 
-    # Saldo początkowe / końcowe
+    # Saldo początkowe / końcowe – obsługa obu wariantów
     sp_match = re.search(r'SALDO POCZĄTKOWE.*?([\-]?\d[\d\s,\.]+\d{2})', text, re.I)
+    if not sp_match:
+        sp_match = re.search(r'Saldo początkowe na dzień.*?([\-]?\d[\d\s,\.]+\d{2})', text, re.I)
     if sp_match:
         saldo_pocz = clean_amount(sp_match.group(1))
 
     sk_match = re.search(r'SALDO KOŃCOWE.*?([\-]?\d[\d\s,\.]+\d{2})', text, re.I)
+    if not sk_match:
+        sk_match = re.search(r'Saldo końcowe na dzień.*?([\-]?\d[\d\s,\.]+\d{2})', text, re.I)
     if sk_match:
         saldo_konc = clean_amount(sk_match.group(1))
 
@@ -288,8 +292,8 @@ def santander_parser(text: str):
             current_desc = []
             continue
 
-        # Kwota – dopasuj każdą linię z kwotą PLN, ale ignoruj saldo
-        if "PLN" in line and "SALDO" not in line.upper():
+        # Kwota – dopasuj każdą linię z kwotą PLN, ale ignoruj saldo/podsumowania
+        if "PLN" in line and not any(x in line.upper() for x in ["SALDO", "PODSUMOWANIE", "DATA WYDRUKU"]):
             m_amt = re.search(r'([-]?\d[\d\s,\.]+\d{2})\s*PLN', line)
             if m_amt and current_date:
                 amt = clean_amount(m_amt.group(1))
@@ -310,7 +314,7 @@ def santander_parser(text: str):
     # deduplikacja bez sortowania (kolejność jak w PDF)
     transactions = deduplicate_transactions(transactions)
 
-    # Okres z PDF (stały dla lipca 2025)
+    # Okres z PDF (lipiec 2025)
     open_d = "250701"
     close_d = "250731"
 
