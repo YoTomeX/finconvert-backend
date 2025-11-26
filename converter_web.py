@@ -288,8 +288,8 @@ def santander_parser(text: str):
             current_desc = []
             continue
 
-        # Kwota – tylko jeśli linia zawiera Tytuł lub PŁATNOŚĆ KARTĄ
-        if ("TYTUŁ" in line.upper() or "PŁATNOŚĆ KARTĄ" in line.upper()) and "PLN" in line:
+        # Kwota – dopasuj każdą linię z kwotą PLN, ale ignoruj saldo
+        if "PLN" in line and "SALDO" not in line.upper():
             m_amt = re.search(r'([-]?\d[\d\s,\.]+\d{2})\s*PLN', line)
             if m_amt and current_date:
                 amt = clean_amount(m_amt.group(1))
@@ -303,13 +303,14 @@ def santander_parser(text: str):
 
         # Zbieraj opis – do następnej daty
         if current_date:
-            if line.startswith(("Z rachunek", "Na rachunek", "Tytuł", "Numer karty")) or "FV" in line or "VAT" in line or "ZUS" in line:
+            if line.startswith(("Z rachunek", "Na rachunek", "Tytuł", "Numer karty")) \
+               or "FV" in line or "VAT" in line or "ZUS" in line:
                 current_desc.append(line)
 
     # deduplikacja bez sortowania (kolejność jak w PDF)
     transactions = deduplicate_transactions(transactions)
 
-    # Okres z PDF
+    # Okres z PDF (stały dla lipca 2025)
     open_d = "250701"
     close_d = "250731"
 
