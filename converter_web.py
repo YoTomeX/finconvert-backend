@@ -108,7 +108,7 @@ def map_transaction_code(desc: str) -> str:
         return 'NTRF'
     desc_clean = remove_diacritics(desc)
 
-    # podatki / ZUS / VAT
+    # podatki / ZUS / VAT / Urząd Skarbowy
     if any(x in desc_clean for x in ('ZUS', 'KRUS', 'VAT', 'PIT', 'URZAD SKARBOWY')):
         return 'N562'
     # prowizje / opłaty
@@ -252,6 +252,7 @@ def _parse_amount_pln_from_line(s: str) -> str:
     m = re.search(r'([\-]?\d[\d\s.,]*\d{2})\s*PLN', s)
     return clean_amount(m.group(1)) if m else "0,00"
     
+
 def santander_parser(text: str):
     account = ""
     saldo_pocz = "0,00"
@@ -287,26 +288,25 @@ def santander_parser(text: str):
             current_desc = []
             continue
 
-        # Kwota
-        m_amt = re.search(r'([-]?\d[\d\s,\.]+\d{2})\s*PLN', line)
-        if m_amt and current_date:
-            amt = clean_amount(m_amt.group(1))
-            desc = _strip_spaces(" ".join(current_desc))
-
-            if not any(marker in desc.upper() for marker in SUMMARY_MARKERS):
-                transactions.append((current_date, amt, desc, current_date[2:6]))
-
-            current_date = None
-            current_desc = []
+        # Kwota – tylko jeśli linia zawiera Tytuł lub PŁATNOŚĆ KARTĄ
+        if ("TYTUŁ" in line.upper() or "PŁATNOŚĆ KARTĄ" in line.upper()) and "PLN" in line:
+            m_amt = re.search(r'([-]?\d[\d\s,\.]+\d{2})\s*PLN', line)
+            if m_amt and current_date:
+                amt = clean_amount(m_amt.group(1))
+                current_desc.append(line)
+                desc = _strip_spaces(" ".join(current_desc))
+                if not any(marker in desc.upper() for marker in SUMMARY_MARKERS):
+                    transactions.append((current_date, amt, desc, current_date[2:6]))
+                current_date = None
+                current_desc = []
             continue
 
-        # Zbieraj tylko istotne linie opisu
+        # Zbieraj opis – do następnej daty
         if current_date:
             if line.startswith(("Z rachunek", "Na rachunek", "Tytuł", "Numer karty")) or "FV" in line or "VAT" in line or "ZUS" in line:
                 current_desc.append(line)
 
-    # sort + dedup
-    transactions.sort(key=lambda x: (x[0], normalize_amount_for_calc(x[1]), x[2][:80], x[3]))
+    # deduplikacja bez sortowania (kolejność jak w PDF)
     transactions = deduplicate_transactions(transactions)
 
     # Okres z PDF
@@ -383,7 +383,6 @@ def build_mt940(account: str, saldo_poczatkowe: str, saldo_koncowe: str,
 
     lines.append("-")
     return "\r\n".join(lines)
-
 
 
 def save_mt940_file(mt940_text: str, output_path: str) -> None:
@@ -464,7 +463,6 @@ def main() -> None:
     print(f"Saldo początkowe z PDF: {sp}")
     print(f"Saldo końcowe z PDF: {sk}")
     print(f"Liczba transakcji po filtracji: {len(tx)}")
-
 
 
 if __name__ == "__main__":
