@@ -281,18 +281,17 @@ def santander_parser(text: str):
     if sk_match:
         saldo_konc = clean_amount(sk_match.group(1))
 
-    # Parsowanie transakcji blokami
+    # Parsowanie transakcji
     lines = [l.strip() for l in text.splitlines()]
     current_date = None
     desc_lines = []
 
     for line in lines:
-        # początek transakcji
-        if line.upper().startswith("DATA OPERACJI"):
-            m = re.search(r'(\d{4}-\d{2}-\d{2})', line)
-            if m:
-                current_date = _parse_date_text_to_yymmdd(m.group(1))
-                desc_lines = []
+        # początek transakcji – szukaj daty operacji w dowolnym miejscu linii
+        m = re.search(r'Data operacji\s+(\d{4}-\d{2}-\d{2})', line)
+        if m:
+            current_date = _parse_date_text_to_yymmdd(m.group(1))
+            desc_lines = []
             continue
 
         if current_date:
@@ -301,7 +300,7 @@ def santander_parser(text: str):
                or "FV" in line or "VAT" in line or "ZUS" in line:
                 desc_lines.append(line)
 
-            # kwota transakcji (pierwsza linia z PLN, ale nie saldo)
+            # kwota transakcji
             if "PLN" in line and "SALDO PO OPERACJI" not in line.upper():
                 m_amt = re.search(r'([-]?\d[\d\s,\.]+\d{2})\s*PLN', line)
                 if m_amt:
