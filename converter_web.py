@@ -107,21 +107,21 @@ def map_transaction_code(desc: str) -> str:
     if not desc:
         return 'NTRF'
     desc_clean = remove_diacritics(desc)
-    if any(x in desc_clean for x in ('ZUS', 'KRUS', 'VAT', 'JPK')):
+
+    # podatki / ZUS / VAT
+    if any(x in desc_clean for x in ('ZUS', 'KRUS', 'VAT', 'PIT', 'URZAD SKARBOWY')):
         return 'N562'
-    if 'PRZELEW PODZIELONY' in desc_clean or 'PŁATNOŚĆ PODZIELONA' in desc_clean or 'PLATNOSC PODZIELONA' in desc_clean:
-        return 'N641'
-    if any(x in desc_clean for x in ('PRZELEW KRAJOWY', 'PRZELEW MIEDZYBANKOWY', 'PRZELEW EXPRESS ELIXIR', 'PRZELEW ELIXIR', 'PRZELEW NA RACHUNEK BANKU')):
-        return 'N240'
-    if 'OBCIAZENIE RACHUNKU' in desc_clean or 'OBCIĄŻENIE RACHUNKU' in desc:
-        return 'N495'
-    if any(x in desc_clean for x in ('POBRANIE OPLATY', 'PROWIZJA', 'OPLATA', 'OPŁATA')):
+    # prowizje / opłaty
+    if any(x in desc_clean for x in ('PROWIZJA', 'OPLATA', 'OPŁATA')):
         return 'N775'
-    if 'WPLATA ZASILENIE' in desc_clean or 'UZNANIE' in desc_clean:
+    # przelewy
+    if any(x in desc_clean for x in ('PRZELEW', 'ELIXIR', 'EXPRESS')):
+        return 'N240'
+    # uznania / wpływy
+    if 'UZNANIE' in desc_clean or 'WPLATA' in desc_clean:
         return 'N524'
-    if 'CZEK' in desc_clean:
-        return 'N027'
-    if 'TRANSAKCJA KARTA' in desc_clean or 'TRANSAKCJA KARTĄ' in desc:
+    # transakcje kartowe
+    if 'KARTA' in desc_clean or 'PLATNOSC KARTA' in desc_clean:
         return 'NTRF'
     return 'NTRF'
 
@@ -262,12 +262,8 @@ def santander_parser(text: str):
     prod_match = re.search(r'Produkty:\s*(\d{2}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4})', text)
     if prod_match:
         account = re.sub(r'\s+', '', prod_match.group(1))
-    else:
-        acc_match = re.search(r'(PL\d{2}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4})', text)
-        if acc_match:
-            account = re.sub(r'\s+', '', acc_match.group(1))
 
-    # Saldo początkowe / końcowe – szukaj w całym tekście
+    # Saldo początkowe / końcowe
     sp_match = re.search(r'SALDO POCZĄTKOWE.*?([\-]?\d[\d\s,\.]+\d{2})', text, re.I)
     if sp_match:
         saldo_pocz = clean_amount(sp_match.group(1))
@@ -295,12 +291,9 @@ def santander_parser(text: str):
         m_amt = re.search(r'([-]?\d[\d\s,\.]+\d{2})\s*PLN', line)
         if m_amt and current_date:
             amt = clean_amount(m_amt.group(1))
-
-            # buduj opis tylko z istotnych linii
             desc = _strip_spaces(" ".join(current_desc))
-            if any(marker in desc.upper() for marker in SUMMARY_MARKERS):
-                logging.debug(f"[DROP] pseudo-transakcja: {desc}")
-            else:
+
+            if not any(marker in desc.upper() for marker in SUMMARY_MARKERS):
                 transactions.append((current_date, amt, desc, current_date[2:6]))
 
             current_date = None
@@ -309,7 +302,7 @@ def santander_parser(text: str):
 
         # Zbieraj tylko istotne linie opisu
         if current_date:
-            if line.startswith(("Z rachunku", "Na rachunek", "Tytuł", "Numer karty")):
+            if line.startswith(("Z rachunek", "Na rachunek", "Tytuł", "Numer karty")) or "FV" in line or "VAT" in line or "ZUS" in line:
                 current_desc.append(line)
 
     # sort + dedup
