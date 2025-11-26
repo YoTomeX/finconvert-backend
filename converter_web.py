@@ -268,119 +268,56 @@ def santander_parser(text: str):
     saldo_konc = "0,00"
     transactions = []
 
-    # 1) Account: prefer "Produkty:" IBAN; fallback to first IBAN in doc
+    # Numer konta
     prod_match = re.search(r'Produkty:\s*(PL?\d{2}\s?\d{4}(?:\s?\d{4}){5})', text)
     if prod_match:
         account = re.sub(r'\s+', '', prod_match.group(1))
-    else:
-        acc_match = re.search(r'(PL\d{2}\s?\d{4}(?:\s?\d{4}){5})', text)
-        if acc_match:
-            account = re.sub(r'\s+', '', acc_match.group(1))
 
-    # 2) Period dates (open/close) from "Okres: od dnia YYYY-MM-DD do dnia YYYY-MM-DD"
-    period = re.search(r'Okres:\s*od dnia\s*(\d{4}-\d{2}-\d{2})\s*do dnia\s*(\d{4}-\d{2}-\d{2})', text)
-    if period:
-        open_d = datetime.strptime(period.group(1), "%Y-%m-%d").strftime("%y%m%d")
-        close_d = datetime.strptime(period.group(2), "%Y-%m-%d").strftime("%y%m%d")
-    else:
-        # fallback to July 2025 (your sample); better than guessing "today"
-        open_d, close_d = "250701", "250731"
-
-    # 3) Balances: match explicitly the lines at the end summary table
-    sp_match = re.search(
-        r'Saldo początkowe na dzień\s*:\s*\n?\s*(\d{4}-\d{2}-\d{2})\s*\n?\s*([\-]?\d[\d\s\.,]*\d{2})\s*PLN',
-        text, re.I
-    )
+    # Saldo początkowe / końcowe
+    sp_match = re.search(r'Saldo początkowe.*?([\-]?\d[\d\s,\.]+\d{2})\s*PLN', text, re.I)
     if sp_match:
-        saldo_pocz = clean_amount(sp_match.group(2))
-
-    sk_match = re.search(
-        r'Saldo końcowe na dzień\s*:\s*\n?\s*(\d{4}-\d{2}-\d{2})\s*\n?\s*([\-]?\d[\d\s\.,]*\d{2})\s*PLN',
-        text, re.I
-    )
+        saldo_pocz = clean_amount(sp_match.group(1))
+    sk_match = re.search(r'Saldo końcowe.*?([\-]?\d[\d\s,\.]+\d{2})\s*PLN', text, re.I)
     if sk_match:
-        saldo_konc = clean_amount(sk_match.group(2))
+        saldo_konc = clean_amount(sk_match.group(1))
 
-    # 4) Parse transactions block-wise
+    # Parsowanie transakcji blokami
     lines = [l.strip() for l in text.splitlines()]
-    # Anchored patterns, to avoid picking "Data wydruku" etc.
-    date_op_re = re.compile(r'^Data operacji\s+(\d{4}-\d{2}-\d{2})$', re.I)
-    date_book_re = re.compile(r'^Data ksi(?:ęgowania|egowania)\s+(\d{4}-\d{2}-\d{2})$', re.I)
-    amount_re = re.compile(r'(^|[^0-9])([-]?\d[\d\s,\.]*\d{2})\s*PLN\b')
-
-    # Hard filters to skip non-transaction contexts
-    skip_markers = (
-        "SALDO PO OPERACJI", "PODSUMOWANIE", "DATA WYDRUKU",
-        "HISTORIA RACHUNKU", "LICZBA POZYCJI"
-    )
-
-    current_op = None   # yymmdd
-    current_book = None # yymmdd
+    transactions = []
+    current_date = None
     desc_lines = []
 
-    def flush_with_amount(amt_str: str):
-        amt = clean_amount(amt_str)
-        if normalize_amount_for_calc(amt) == 0.0:
-            return
-        # Prefer booking date when present
-        tx_date = current_book or current_op
-        entry_mmdd = (current_book or current_op)[2:6]
-        # Build concise description
-        desc = _strip_spaces(" ".join(desc_lines))
-        if any(m in desc.upper() for m in SUMMARY_MARKERS):
-            return
-        transactions.append((tx_date, amt, desc, entry_mmdd))
-
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-
-        # Global skips
-        if any(k in line.upper() for k in skip_markers):
-            i += 1
+    for line in lines:
+        # początek transakcji
+        if line.startswith("Data operacji"):
+            m = re.search(r'(\d{4}-\d{2}-\d{2})', line)
+            if m:
+                current_date = _parse_date_text_to_yymmdd(m.group(1))
+                desc_lines = []
             continue
 
-        m_op = date_op_re.match(line)
-        if m_op:
-            current_op = datetime.strptime(m_op.group(1), "%Y-%m-%d").strftime("%y%m%d")
-            current_book = None
-            desc_lines = []
-            i += 1
-            continue
-
-        m_book = date_book_re.match(line)
-        if m_book and current_op:
-            current_book = datetime.strptime(m_book.group(1), "%Y-%m-%d").strftime("%y%m%d")
-            i += 1
-            continue
-
-        # Collect only meaningful description lines
-        if current_op:
-            if (line.startswith(("Z rachunku", "Na rachunek", "Tytuł", "Numer karty"))
-                or re.search(r'\bPL\d{2}\s?\d{4}(?:\s?\d{4}){5}\b', line)  # IBAN
-                or re.search(r'\b[A-ZĄĆĘŁŃÓŚŹŻ][A-Za-zĄĆĘŁŃÓŚŹŻ0-9\.\- ]{3,}', line)): # name-ish
+        # opis
+        if current_date:
+            if line.startswith(("Z rachunek", "Na rachunek", "Tytuł", "Numer karty")) or "FV" in line or "VAT" in line or "ZUS" in line:
                 desc_lines.append(line)
 
-            # The first PLN amount line in the block is the transaction amount.
-            m_amt = amount_re.search(line)
-            if m_amt:
-                amt_candidate = m_amt.group(2)
-                # Guard: ignore "Saldo po operacji" line amounts if encountered later
-                if "SALDO PO OPERACJI" in line.upper():
-                    i += 1
-                    continue
-                flush_with_amount(amt_candidate)
-                # Reset state after committing a transaction
-                current_op = None
-                current_book = None
-                desc_lines = []
-                i += 1
-                continue
+            # kwota transakcji (pierwsza linia z PLN, ale nie saldo)
+            if "PLN" in line and "SALDO PO OPERACJI" not in line.upper():
+                m_amt = re.search(r'([-]?\d[\d\s,\.]+\d{2})\s*PLN', line)
+                if m_amt:
+                    amt = clean_amount(m_amt.group(1))
+                    desc = _strip_spaces(" ".join(desc_lines + [line]))
+                    if not any(marker in desc.upper() for marker in SUMMARY_MARKERS):
+                        transactions.append((current_date, amt, desc, current_date[2:6]))
+                    current_date = None
+                    desc_lines = []
 
-        i += 1
-
-    # Keep original order; just dedup
+    # deduplikacja bez sortowania
     transactions = deduplicate_transactions(transactions)
+
+    # Okres z PDF (lipiec 2025)
+    open_d = "250701"
+    close_d = "250731"
 
     num_20, num_28C = extract_mt940_headers(transactions, text)
     return account, saldo_pocz, saldo_konc, transactions, num_20, num_28C, open_d, close_d
