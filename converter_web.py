@@ -287,8 +287,9 @@ def santander_parser(text: str):
     desc_lines = []
 
     for line in lines:
+        print("[DEBUG LINE]", line)
         # początek transakcji – szukaj daty operacji w dowolnym miejscu linii
-        m = re.search(r'Data operacji\s+(\d{4}-\d{2}-\d{2})', line)
+        m = re.search(r'(\d{4}-\d{2}-\d{2})', line)
         if m:
             current_date = _parse_date_text_to_yymmdd(m.group(1))
             desc_lines = []
