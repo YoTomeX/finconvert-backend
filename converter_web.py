@@ -267,13 +267,12 @@ def santander_parser(text: str):
         if acc_match:
             account = re.sub(r'\s+', '', acc_match.group(1))
 
-    # Saldo początkowe – dopasowanie tylko linii zaczynających się od SALDO POCZĄTKOWE
-    sp_match = re.search(r'^SALDO POCZĄTKOWE.*?([\-]?\d[\d\s,\.]+\d{2})', text, re.I | re.M)
+    # Saldo początkowe / końcowe – szukaj w całym tekście
+    sp_match = re.search(r'SALDO POCZĄTKOWE.*?([\-]?\d[\d\s,\.]+\d{2})', text, re.I)
     if sp_match:
         saldo_pocz = clean_amount(sp_match.group(1))
 
-    # Saldo końcowe – dopasowanie tylko linii zaczynających się od SALDO KOŃCOWE
-    sk_match = re.search(r'^SALDO KOŃCOWE.*?([\-]?\d[\d\s,\.]+\d{2})', text, re.I | re.M)
+    sk_match = re.search(r'SALDO KOŃCOWE.*?([\-]?\d[\d\s,\.]+\d{2})', text, re.I)
     if sk_match:
         saldo_konc = clean_amount(sk_match.group(1))
 
@@ -285,23 +284,22 @@ def santander_parser(text: str):
     for line in lines:
         line = line.strip()
 
-        # Jeśli linia zawiera datę operacji
+        # Data operacji
         m_date = re.search(r'(\d{4}-\d{2}-\d{2})', line)
         if m_date:
             current_date = _parse_date_text_to_yymmdd(m_date.group(1))
-            current_desc = [line]
+            current_desc = []
             continue
 
-        # Jeśli linia zawiera kwotę
+        # Kwota
         m_amt = re.search(r'([-]?\d[\d\s,\.]+\d{2})\s*PLN', line)
         if m_amt and current_date:
             amt = clean_amount(m_amt.group(1))
-            current_desc.append(line)
-            desc = _strip_spaces(" ".join(current_desc))
 
-            # filtr pseudo-transakcji – sprawdzamy każdą linię opisu
+            # buduj opis tylko z istotnych linii
+            desc = _strip_spaces(" ".join(current_desc))
             if any(marker in desc.upper() for marker in SUMMARY_MARKERS):
-                logging.debug(f"[DROP] Odrzucono pseudo-transakcję: {desc}")
+                logging.debug(f"[DROP] pseudo-transakcja: {desc}")
             else:
                 transactions.append((current_date, amt, desc, current_date[2:6]))
 
@@ -309,14 +307,16 @@ def santander_parser(text: str):
             current_desc = []
             continue
 
+        # Zbieraj tylko istotne linie opisu
         if current_date:
-            current_desc.append(line)
+            if line.startswith(("Z rachunku", "Na rachunek", "Tytuł", "Numer karty")):
+                current_desc.append(line)
 
     # sort + dedup
     transactions.sort(key=lambda x: (x[0], normalize_amount_for_calc(x[1]), x[2][:80], x[3]))
     transactions = deduplicate_transactions(transactions)
 
-    # Daty sald – wymuszamy okres z PDF: 01.07.2025 – 31.07.2025
+    # Okres z PDF
     open_d = "250701"
     close_d = "250731"
 
