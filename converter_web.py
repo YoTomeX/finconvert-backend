@@ -300,9 +300,27 @@ def santander_parser(text: str):
         if line.upper().startswith("DATA OPERACJI"):
             # jeśli mamy otwartą transakcję – zamknij ją
             if pending_op and current_date:
-                desc = _strip_spaces(" // ".join(dl for dl in desc_lines if dl))
+                # rozdziel linie na kategorie
+                tytul_lines = [l for l in desc_lines if l.upper().startswith("TYTUŁ")]
+                rachunek_lines = [l for l in desc_lines if l.upper().startswith(("Z RACHUNEK", "NA RACHUNEK"))]
+                meta_lines = [l for l in desc_lines if l not in tytul_lines and l not in rachunek_lines]
+
+                # scal tytuł w jedną linię
+                tytul_text = " ".join(tytul_lines).replace("Tytuł:", "Tytuł:").strip()
+
+                # buduj opis w kolejności: tytuł → rachunki → meta
+                parts = []
+                if tytul_text:
+                    parts.append(tytul_text)
+                if rachunek_lines:
+                    parts.append(" // ".join(rachunek_lines))
+                if meta_lines:
+                    parts.append(" // ".join(meta_lines))
+
+                desc = _strip_spaces(" // ".join(parts))
                 if not desc:
                     desc = "Operacja bankowa"
+
                 gvc = map_transaction_code(desc)
                 transactions.append((current_date, amt, desc, current_date[2:6], gvc))
 
@@ -329,9 +347,24 @@ def santander_parser(text: str):
 
     # zamknij ostatnią transakcję
     if pending_op and current_date:
-        desc = _strip_spaces(" // ".join(dl for dl in desc_lines if dl))
+        tytul_lines = [l for l in desc_lines if l.upper().startswith("TYTUŁ")]
+        rachunek_lines = [l for l in desc_lines if l.upper().startswith(("Z RACHUNEK", "NA RACHUNEK"))]
+        meta_lines = [l for l in desc_lines if l not in tytul_lines and l not in rachunek_lines]
+
+        tytul_text = " ".join(tytul_lines).replace("Tytuł:", "Tytuł:").strip()
+
+        parts = []
+        if tytul_text:
+            parts.append(tytul_text)
+        if rachunek_lines:
+            parts.append(" // ".join(rachunek_lines))
+        if meta_lines:
+            parts.append(" // ".join(meta_lines))
+
+        desc = _strip_spaces(" // ".join(parts))
         if not desc:
             desc = "Operacja bankowa"
+
         gvc = map_transaction_code(desc)
         transactions.append((current_date, amt, desc, current_date[2:6], gvc))
 
