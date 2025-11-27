@@ -317,16 +317,20 @@ def santander_parser(text: str):
                 pending_op = False
                 desc_lines = []
             else:
-                # opis dodatkowy
+                # opis dodatkowy – zbieraj linie z rachunkami, tytułem, kartą
                 if any(line.upper().startswith(x) for x in ["Z RACHUNEK", "NA RACHUNEK", "TYTUŁ", "NUMER KARTY"]) \
                    or "FV" in line or "VAT" in line or "ZUS" in line:
                     desc_lines.append(line)
 
     transactions = deduplicate_transactions(transactions)
 
-    # Okres z PDF (lipiec 2025)
-    open_d = "250701"
-    close_d = "250731"
+    # Okres dynamiczny – na podstawie transakcji
+    if transactions:
+        open_d = transactions[0][0]   # pierwsza data w formacie YYMMDD
+        close_d = transactions[-1][0] # ostatnia data w formacie YYMMDD
+    else:
+        open_d = ""
+        close_d = ""
 
     num_20, num_28C = extract_mt940_headers(transactions, text)
     return account, saldo_pocz, saldo_konc, transactions, num_20, num_28C, open_d, close_d
