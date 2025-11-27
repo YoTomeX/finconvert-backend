@@ -304,23 +304,20 @@ def santander_parser(text: str):
     ]
 
     def build_desc(desc_lines):
-        # kategorie
         data_operacji = [l for l in desc_lines if l.upper().startswith("DATA OPERACJI")]
         data_lines = [l for l in desc_lines if re.match(r"\d{4}-\d{2}-\d{2}", l)]
         zrach_lines = [l for l in desc_lines if l.upper().startswith("Z RACHUNEK")]
         narach_lines = [l for l in desc_lines if l.upper().startswith("NA RACHUNEK")]
-        kontrahent_lines = [l for l in desc_lines if "ANALYTICS" in l.upper()]
+        # kontrahent = linie zawierające "ANALYTICS" albo inne nazwy firm, ale NIE "DATA KSIĘGOWANIA"
+        kontrahent_lines = [l for l in desc_lines if "ANALYTICS" in l.upper() and "DATA KSIĘGOWANIA" not in l.upper()]
         tytul_lines = [l for l in desc_lines if l.upper().startswith("TYTUŁ")]
 
-        # scal tytuł
         tytul_text = " ".join(tytul_lines).replace("Tytuł:", "Tytuł:").strip()
 
-        # kontrahent – ucinamy po "SPÓŁKA", "SP." itd.
         kontrahent = ""
         if kontrahent_lines:
             kontrahent = normalize_contrahent(kontrahent_lines[0])
 
-        # budowanie opisu w stałej kolejności
         parts = []
         if data_operacji:
             parts.append(" // ".join(data_operacji))
@@ -337,6 +334,7 @@ def santander_parser(text: str):
 
         desc = _strip_spaces(" // ".join(parts))
         return desc if desc else "Operacja bankowa"
+
 
 
     for line in lines:
