@@ -262,6 +262,16 @@ def _parse_amount_pln_from_line(s: str) -> str:
     return clean_amount(m.group(1)) if m else "0,00"
     
 
+def normalize_contrahent(line: str) -> str:
+    line = line.strip()
+    # lista markerów po których ucinamy
+    markers = ["SPÓŁKA", "SPOLKA", "SP.", "SPÓŁ.", "SP Z", "SPÓŁKA Z", "SP Z O.O", "SPÓŁKA Z OGRANICZONĄ"]
+    for marker in markers:
+        idx = line.upper().find(marker)
+        if idx != -1:
+            return line[:idx].strip()
+    return line
+
 def santander_parser(text: str):
     account = ""
     saldo_pocz = "0,00"
@@ -288,34 +298,38 @@ def santander_parser(text: str):
     amt = "0,00"
     current_date = None
 
-    # frazy do odfiltrowania (stopki PDF, meta)
     STOPKA_MARKERS = [
         "DOKUMENT JEST WYDRUKIEM", "SANTANDER BANK POLSKA", "STRONA", "KRS", "NIP", "REGON"
     ]
 
     def build_desc(desc_lines):
-        # rozdziel linie na kategorie
-        tytul_lines = [l for l in desc_lines if l.upper().startswith("TYTUŁ")]
+        data_operacji = [l for l in desc_lines if l.upper().startswith("DATA OPERACJI")]
+        data_ksiegowania = [l for l in desc_lines if "DATA KSIĘGOWANIA" in l.upper()]
+        extra_date = [l for l in desc_lines if re.match(r"\d{4}-\d{2}-\d{2}", l)]
         zrach_lines = [l for l in desc_lines if l.upper().startswith("Z RACHUNEK")]
         narach_lines = [l for l in desc_lines if l.upper().startswith("NA RACHUNEK")]
-        data_lines = [l for l in desc_lines if "DATA KSIĘGOWANIA" in l.upper()]
-        meta_lines = [l for l in desc_lines if l not in tytul_lines + zrach_lines + narach_lines + data_lines]
+        kontrahent_lines = [l for l in desc_lines if "ANALYTICS" in l.upper()]
+        tytul_lines = [l for l in desc_lines if l.upper().startswith("TYTUŁ")]
 
-        # scal tytuł w jedną linię
+        # scal tytuł
         tytul_text = " ".join(tytul_lines).replace("Tytuł:", "Tytuł:").strip()
 
-        # buduj opis w kolejności: tytuł → Z rachunku → Na rachunek → Data księgowania → meta
         parts = []
-        if tytul_text:
-            parts.append(tytul_text)
+        if data_operacji:
+            parts.append(" // ".join(data_operacji))
+        if data_ksiegowania:
+            parts.append(" // ".join(data_ksiegowania))
+        if extra_date:
+            parts.append(" // ".join(extra_date))
         if zrach_lines:
             parts.append(" // ".join(zrach_lines))
         if narach_lines:
             parts.append(" // ".join(narach_lines))
-        if data_lines:
-            parts.append(" // ".join(data_lines))
-        if meta_lines:
-            parts.append(" // ".join(meta_lines))
+        if kontrahent_lines:
+            kontrahent = normalize_contrahent(kontrahent_lines[0])
+            parts.append(kontrahent)
+        if tytul_text:
+            parts.append(tytul_text)
 
         desc = _strip_spaces(" // ".join(parts))
         return desc if desc else "Operacja bankowa"
@@ -325,13 +339,11 @@ def santander_parser(text: str):
             continue
 
         if line.upper().startswith("DATA OPERACJI"):
-            # jeśli mamy otwartą transakcję – zamknij ją
             if pending_op and current_date:
                 desc = build_desc(desc_lines)
                 gvc = map_transaction_code(desc)
                 transactions.append((current_date, amt, desc, current_date[2:6], gvc))
 
-            # start nowej transakcji
             pending_op = True
             desc_lines = []
             m_amt = re.search(r'([-]?\d[\d\s,\.]+\d{2})\s*PLN', line)
@@ -340,19 +352,15 @@ def santander_parser(text: str):
             continue
 
         if pending_op:
-            # jeśli linia to data YYYY-MM-DD → ustaw current_date, ale NIE kończ opisu
             m_date = re.match(r'(\d{4}-\d{2}-\d{2})', line)
             if m_date and not current_date:
                 current_date = _parse_date_text_to_yymmdd(m_date.group(1))
             else:
-                # filtruj stopki PDF
                 if any(marker in line.upper() for marker in STOPKA_MARKERS):
                     continue
-                # zbieraj wszystkie linie opisu
                 if line:
                     desc_lines.append(line)
 
-    # zamknij ostatnią transakcję
     if pending_op and current_date:
         desc = build_desc(desc_lines)
         gvc = map_transaction_code(desc)
@@ -360,7 +368,6 @@ def santander_parser(text: str):
 
     transactions = deduplicate_transactions(transactions)
 
-    # Okres dynamiczny – min/max daty transakcji
     if transactions:
         dates = [t[0] for t in transactions]
         open_d = min(dates)
