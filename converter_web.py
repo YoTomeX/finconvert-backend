@@ -364,47 +364,35 @@ def detect_bank(text: str) -> str:
     return "Nieznany"
 
 
-def build_mt940(account: str, saldo_poczatkowe: str, saldo_koncowe: str,
-                transactions: list, num_20: str, num_28C: str,
-                open_date_yymmdd: str = None, close_date_yymmdd: str = None) -> str:
-    # Ensure :25 formatting
-    acc_25 = format_account_for_25(account)
+def build_mt940(account, saldo_pocz, saldo_konc, transactions, num_20, num_28C, open_d, close_d):
+    """
+    Buduje plik MT940 na podstawie sparsowanych danych.
+    transactions: lista krotek (date, amount, desc, mmdd, gvc)
+    """
 
-    lines = [
-        f":20:{num_20}",
-        f":25:{acc_25}",
-        f":28C:{num_28C}"
-    ]
+    lines = []
+    # Nagłówki
+    lines.append(f":20:{num_20}")
+    lines.append(f":25:/{account}")
+    lines.append(f":28C:{num_28C}")
+    lines.append(f":60F:D{open_d}PLN{saldo_pocz}")
 
-    # :60F: starting balance (D for negative)
-    start_date = open_date_yymmdd or (transactions[0][0] if transactions else datetime.today().strftime("%y%m%d"))
-    lines.append(f":60F:{format_cd_flag(saldo_poczatkowe)}{start_date}PLN{format_mt940_amount(saldo_poczatkowe)}")
-    print(f"[DEBUG] Saldo początkowe: {saldo_poczatkowe} (data {start_date})")
+    # Transakcje
+    for d, a, desc, mmdd, gvc in transactions:
+        # linia :61: – data, kwota, kod transakcji
+        lines.append(f":61:{d}{'D' if '-' in a else 'C'}{a}{gvc}//NONREF")
+        # linia :86: – opis transakcji
+        if desc.strip():
+            lines.append(f":86:/00{desc}")
+        else:
+            lines.append(":86:/00")
 
-    # :61: + :86: transactions
-    count_61 = 0
-    for d, a, desc, mmdd in transactions:
-        val = normalize_amount_for_calc(a)
-        if val == 0.0:
-            continue
-        cd = 'D' if val < 0 else 'C'
-        amt = "{:.2f}".format(abs(val)).replace('.', ',')
-        gvc = map_transaction_code(desc)
-        # Use d as transaction date; mmdd stays for entry date semantics
-        lines.append(f":61:{d}{cd}{amt}{gvc}//NONREF")
-        lines.append(build_86_segments(desc))
-        count_61 += 1
-
-    print(f"[DEBUG] Liczba transakcji zapisanych: {count_61}")
-
-    # :62F: closing balance + :64:
-    end_date = close_date_yymmdd or (transactions[-1][0] if transactions else start_date)
-    lines.append(f":62F:{format_cd_flag(saldo_koncowe)}{end_date}PLN{format_mt940_amount(saldo_koncowe)}")
-    lines.append(f":64:{format_cd_flag(saldo_koncowe)}{end_date}PLN{format_mt940_amount(saldo_koncowe)}")
-    print(f"[DEBUG] Saldo końcowe: {saldo_koncowe} (data {end_date})")
-
+    # Salda końcowe
+    lines.append(f":62F:D{close_d}PLN{saldo_konc}")
+    lines.append(f":64:D{close_d}PLN{saldo_konc}")
     lines.append("-")
-    return "\r\n".join(lines)
+
+    return "\n".join(lines)
 
 
 
