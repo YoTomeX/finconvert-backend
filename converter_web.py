@@ -296,45 +296,30 @@ def santander_parser(text: str):
         # linia startowa transakcji
         if line.upper().startswith("DATA OPERACJI"):
             pending_op = True
-            # kwota – pierwsze wystąpienie PLN to kwota transakcji
+            # kwota transakcji – pierwsze wystąpienie PLN
             m_amt = re.search(r'([-]?\d[\d\s,\.]+\d{2})\s*PLN', line)
             amt = clean_amount(m_amt.group(1)) if m_amt else "0,00"
-
-            # tytuł operacji – tekst między "Data operacji" a pierwszą kwotą
-            op_title = ""
-            m_title = re.search(r'Data operacji\s+(.*?)(?:\s[-]?\d[\d\s,\.]+\d{2}\s*PLN)', line, flags=re.I)
-            if m_title:
-                op_title = _strip_spaces(m_title.group(1))
-            # zainicjuj opis od tytułu, jeśli udało się go wyciągnąć
-            desc_lines = [op_title] if op_title else []
+            desc_lines = []
             continue
 
-        # linia z datą YYYY-MM-DD po "Data operacji"
         if pending_op:
+            # linia z datą YYYY-MM-DD kończy opis
             m_date = re.match(r'(\d{4}-\d{2}-\d{2})', line)
             if m_date:
                 current_date = _parse_date_text_to_yymmdd(m_date.group(1))
-
-                # budowa opisu z zebranych linii
                 desc = _strip_spaces(" ".join(dl for dl in desc_lines if dl))
-
-                # jeśli nadal pusty, spróbuj awaryjnie zbudować z samej kwoty/typu
                 if not desc:
-                    # minimalny, bezpieczny opis – aby :86: nie było puste
                     desc = "Operacja bankowa"
-
                 if not any(marker in desc.upper() for marker in SUMMARY_MARKERS):
                     gvc = map_transaction_code(desc)
                     transactions.append((current_date, amt, desc, current_date[2:6], gvc))
-
                 # reset
                 current_date = None
                 pending_op = False
                 desc_lines = []
             else:
-                # opis dodatkowy – zbieraj linie z rachunkami, tytułem, kartą, kontrahentami
-                starts = ("Z RACHUNEK", "NA RACHUNEK", "TYTUŁ", "NUMER KARTY")
-                if line.upper().startswith(starts) or "FV" in line or "VAT" in line or "ZUS" in line:
+                # zbieraj wszystkie linie od "Tytuł:" aż do daty operacji
+                if line and not any(x in line.upper() for x in ["SALDO", "WPLYWY LICZBA OPERACJI", "PODSUMOWANIE"]):
                     desc_lines.append(line)
 
     transactions = deduplicate_transactions(transactions)
