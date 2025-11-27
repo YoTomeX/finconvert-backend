@@ -288,6 +288,11 @@ def santander_parser(text: str):
     amt = "0,00"
     current_date = None
 
+    # frazy do odfiltrowania (stopki PDF, meta)
+    STOPKA_MARKERS = [
+        "DOKUMENT JEST WYDRUKIEM", "SANTANDER BANK POLSKA", "STRONA", "KRS", "NIP", "REGON"
+    ]
+
     for line in lines:
         if any(x in line.upper() for x in ["DATA WYDRUKU", "WPLYWY LICZBA OPERACJI", "SUMA WPLYWOW", "PODSUMOWANIE"]):
             continue
@@ -295,7 +300,7 @@ def santander_parser(text: str):
         if line.upper().startswith("DATA OPERACJI"):
             # jeśli mamy otwartą transakcję – zamknij ją
             if pending_op and current_date:
-                desc = _strip_spaces(" ".join(desc_lines))
+                desc = _strip_spaces(" // ".join(dl for dl in desc_lines if dl))
                 if not desc:
                     desc = "Operacja bankowa"
                 gvc = map_transaction_code(desc)
@@ -315,13 +320,16 @@ def santander_parser(text: str):
             if m_date and not current_date:
                 current_date = _parse_date_text_to_yymmdd(m_date.group(1))
             else:
-                # zbieraj wszystkie linie opisu (tytuł, karta, kontrahent, sklep, kursy, kwoty w EUR)
-                if line and not any(x in line.upper() for x in ["SALDO", "WPLYWY LICZBA OPERACJI", "PODSUMOWANIE"]):
+                # filtruj stopki PDF
+                if any(marker in line.upper() for marker in STOPKA_MARKERS):
+                    continue
+                # zbieraj wszystkie linie opisu
+                if line:
                     desc_lines.append(line)
 
     # zamknij ostatnią transakcję
     if pending_op and current_date:
-        desc = _strip_spaces(" ".join(desc_lines))
+        desc = _strip_spaces(" // ".join(dl for dl in desc_lines if dl))
         if not desc:
             desc = "Operacja bankowa"
         gvc = map_transaction_code(desc)
