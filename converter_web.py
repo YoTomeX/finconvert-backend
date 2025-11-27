@@ -268,12 +268,12 @@ def santander_parser(text: str):
     saldo_konc = "0,00"
     transactions = []
 
-    # Numer konta – łap sam IBAN
+    # Numer konta – wyciągnij sam IBAN (bez spacji)
     prod_match = re.search(r'(PL\d{26})', text.replace(" ", ""))
     if prod_match:
         account = prod_match.group(1)
 
-    # Salda
+    # Salda z PDF
     sp_match = re.search(r'Saldo początkowe.*?([\-]?\d[\d\s,\.]+\d{2})\s*PLN', text, re.I)
     if sp_match:
         saldo_pocz = clean_amount(sp_match.group(1))
@@ -296,10 +296,17 @@ def santander_parser(text: str):
         # linia startowa transakcji
         if line.upper().startswith("DATA OPERACJI"):
             pending_op = True
-            # wyciągnij pierwszą kwotę PLN z tej linii (ignoruj saldo po operacji)
+            # kwota – pierwsze wystąpienie PLN to kwota transakcji
             m_amt = re.search(r'([-]?\d[\d\s,\.]+\d{2})\s*PLN', line)
             amt = clean_amount(m_amt.group(1)) if m_amt else "0,00"
-            desc_lines = []  # nie dodajemy tej linii do opisu
+
+            # tytuł operacji – tekst między "Data operacji" a pierwszą kwotą
+            op_title = ""
+            m_title = re.search(r'Data operacji\s+(.*?)(?:\s[-]?\d[\d\s,\.]+\d{2}\s*PLN)', line, flags=re.I)
+            if m_title:
+                op_title = _strip_spaces(m_title.group(1))
+            # zainicjuj opis od tytułu, jeśli udało się go wyciągnąć
+            desc_lines = [op_title] if op_title else []
             continue
 
         # linia z datą YYYY-MM-DD po "Data operacji"
@@ -307,27 +314,36 @@ def santander_parser(text: str):
             m_date = re.match(r'(\d{4}-\d{2}-\d{2})', line)
             if m_date:
                 current_date = _parse_date_text_to_yymmdd(m_date.group(1))
+
                 # budowa opisu z zebranych linii
-                desc = _strip_spaces(" ".join(desc_lines))
+                desc = _strip_spaces(" ".join(dl for dl in desc_lines if dl))
+
+                # jeśli nadal pusty, spróbuj awaryjnie zbudować z samej kwoty/typu
+                if not desc:
+                    # minimalny, bezpieczny opis – aby :86: nie było puste
+                    desc = "Operacja bankowa"
+
                 if not any(marker in desc.upper() for marker in SUMMARY_MARKERS):
                     gvc = map_transaction_code(desc)
                     transactions.append((current_date, amt, desc, current_date[2:6], gvc))
+
                 # reset
                 current_date = None
                 pending_op = False
                 desc_lines = []
             else:
-                # opis dodatkowy – zbieraj linie z rachunkami, tytułem, kartą
-                if any(line.upper().startswith(x) for x in ["Z RACHUNEK", "NA RACHUNEK", "TYTUŁ", "NUMER KARTY"]) \
-                   or "FV" in line or "VAT" in line or "ZUS" in line:
+                # opis dodatkowy – zbieraj linie z rachunkami, tytułem, kartą, kontrahentami
+                starts = ("Z RACHUNEK", "NA RACHUNEK", "TYTUŁ", "NUMER KARTY")
+                if line.upper().startswith(starts) or "FV" in line or "VAT" in line or "ZUS" in line:
                     desc_lines.append(line)
 
     transactions = deduplicate_transactions(transactions)
 
-    # Okres dynamiczny – na podstawie transakcji
+    # Okres dynamiczny – min/max daty transakcji
     if transactions:
-        open_d = transactions[0][0]   # pierwsza data w formacie YYMMDD
-        close_d = transactions[-1][0] # ostatnia data w formacie YYMMDD
+        dates = [t[0] for t in transactions]
+        open_d = min(dates)
+        close_d = max(dates)
     else:
         open_d = ""
         close_d = ""
@@ -368,6 +384,18 @@ def detect_bank(text: str) -> str:
     return "Nieznany"
 
 
+def _amount_sign_and_value(amount_str: str):
+    """
+    Zwraca (sign, value) gdzie sign to 'D' dla obciążenia (minus) i 'C' dla uznania,
+    a value to kwota bez znaku (z przecinkiem).
+    """
+    amt = amount_str.strip()
+    is_negative = amt.startswith("-")
+    # usuwamy minus do value
+    value = amt.lstrip("-")
+    sign = "D" if is_negative else "C"
+    return sign, value
+
 def build_mt940(account, saldo_pocz, saldo_konc, transactions, num_20, num_28C, open_d, close_d):
     """
     Buduje plik MT940 na podstawie sparsowanych danych.
@@ -379,25 +407,29 @@ def build_mt940(account, saldo_pocz, saldo_konc, transactions, num_20, num_28C, 
     lines.append(f":20:{num_20}")
     lines.append(f":25:/{account}")
     lines.append(f":28C:{num_28C}")
-    lines.append(f":60F:D{open_d}PLN{saldo_pocz}")
+
+    # Saldo początkowe – znak z wartości
+    sp_sign, sp_value = _amount_sign_and_value(saldo_pocz)
+    lines.append(f":60F:{sp_sign}{open_d}PLN{sp_value}")
 
     # Transakcje
     for d, a, desc, mmdd, gvc in transactions:
-        # linia :61: – data, kwota, kod transakcji
-        lines.append(f":61:{d}{'D' if '-' in a else 'C'}{a}{gvc}//NONREF")
-        # linia :86: – opis transakcji
+        t_sign, t_value = _amount_sign_and_value(a)
+        # :61: – data, znak, kwota, kod transakcji
+        lines.append(f":61:{d}{t_sign}{t_value}{gvc}//NONREF")
+        # :86: – opis
         if desc.strip():
             lines.append(f":86:/00{desc}")
         else:
             lines.append(":86:/00")
 
-    # Salda końcowe
-    lines.append(f":62F:D{close_d}PLN{saldo_konc}")
-    lines.append(f":64:D{close_d}PLN{saldo_konc}")
+    # Saldo końcowe – znak z wartości
+    sk_sign, sk_value = _amount_sign_and_value(saldo_konc)
+    lines.append(f":62F:{sk_sign}{close_d}PLN{sk_value}")
+    lines.append(f":64:{sk_sign}{close_d}PLN{sk_value}")
     lines.append("-")
 
     return "\n".join(lines)
-
 
 
 def save_mt940_file(mt940_text: str, output_path: str) -> None:
