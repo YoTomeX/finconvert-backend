@@ -283,44 +283,49 @@ def santander_parser(text: str):
 
     # Parsowanie transakcji
     lines = [l.strip() for l in text.splitlines()]
-    current_date = None
     pending_op = False
     desc_lines = []
     amt = "0,00"
+    current_date = None
 
     for line in lines:
-        # pomiń podsumowania i datę wydruku
         if any(x in line.upper() for x in ["DATA WYDRUKU", "WPLYWY LICZBA OPERACJI", "SUMA WPLYWOW", "PODSUMOWANIE"]):
             continue
 
-        # linia startowa transakcji
         if line.upper().startswith("DATA OPERACJI"):
+            # jeśli mamy otwartą transakcję – zamknij ją
+            if pending_op and current_date:
+                desc = _strip_spaces(" ".join(desc_lines))
+                if not desc:
+                    desc = "Operacja bankowa"
+                gvc = map_transaction_code(desc)
+                transactions.append((current_date, amt, desc, current_date[2:6], gvc))
+
+            # start nowej transakcji
             pending_op = True
-            # kwota transakcji – pierwsze wystąpienie PLN
+            desc_lines = []
             m_amt = re.search(r'([-]?\d[\d\s,\.]+\d{2})\s*PLN', line)
             amt = clean_amount(m_amt.group(1)) if m_amt else "0,00"
-            desc_lines = []
+            current_date = None
             continue
 
         if pending_op:
-            # linia z datą YYYY-MM-DD kończy opis
+            # jeśli linia to data YYYY-MM-DD → ustaw current_date, ale NIE kończ opisu
             m_date = re.match(r'(\d{4}-\d{2}-\d{2})', line)
-            if m_date:
+            if m_date and not current_date:
                 current_date = _parse_date_text_to_yymmdd(m_date.group(1))
-                desc = _strip_spaces(" ".join(dl for dl in desc_lines if dl))
-                if not desc:
-                    desc = "Operacja bankowa"
-                if not any(marker in desc.upper() for marker in SUMMARY_MARKERS):
-                    gvc = map_transaction_code(desc)
-                    transactions.append((current_date, amt, desc, current_date[2:6], gvc))
-                # reset
-                current_date = None
-                pending_op = False
-                desc_lines = []
             else:
-                # zbieraj wszystkie linie od "Tytuł:" aż do daty operacji
+                # zbieraj wszystkie linie opisu (tytuł, karta, kontrahent, sklep, kursy, kwoty w EUR)
                 if line and not any(x in line.upper() for x in ["SALDO", "WPLYWY LICZBA OPERACJI", "PODSUMOWANIE"]):
                     desc_lines.append(line)
+
+    # zamknij ostatnią transakcję
+    if pending_op and current_date:
+        desc = _strip_spaces(" ".join(desc_lines))
+        if not desc:
+            desc = "Operacja bankowa"
+        gvc = map_transaction_code(desc)
+        transactions.append((current_date, amt, desc, current_date[2:6], gvc))
 
     transactions = deduplicate_transactions(transactions)
 
