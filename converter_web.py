@@ -262,6 +262,7 @@ def _parse_amount_pln_from_line(s: str) -> str:
     return clean_amount(m.group(1)) if m else "0,00"
     
 
+
 def normalize_contrahent(line: str) -> str:
     line = line.strip()
     # lista markerów po których ucinamy
@@ -303,9 +304,9 @@ def santander_parser(text: str):
     ]
 
     def build_desc(desc_lines):
+        # kategorie
         data_operacji = [l for l in desc_lines if l.upper().startswith("DATA OPERACJI")]
-        data_ksiegowania = [l for l in desc_lines if "DATA KSIĘGOWANIA" in l.upper()]
-        extra_date = [l for l in desc_lines if re.match(r"\d{4}-\d{2}-\d{2}", l)]
+        data_lines = [l for l in desc_lines if re.match(r"\d{4}-\d{2}-\d{2}", l)]
         zrach_lines = [l for l in desc_lines if l.upper().startswith("Z RACHUNEK")]
         narach_lines = [l for l in desc_lines if l.upper().startswith("NA RACHUNEK")]
         kontrahent_lines = [l for l in desc_lines if "ANALYTICS" in l.upper()]
@@ -314,25 +315,29 @@ def santander_parser(text: str):
         # scal tytuł
         tytul_text = " ".join(tytul_lines).replace("Tytuł:", "Tytuł:").strip()
 
+        # kontrahent – ucinamy po "SPÓŁKA", "SP." itd.
+        kontrahent = ""
+        if kontrahent_lines:
+            kontrahent = normalize_contrahent(kontrahent_lines[0])
+
+        # budowanie opisu w stałej kolejności
         parts = []
         if data_operacji:
             parts.append(" // ".join(data_operacji))
-        if data_ksiegowania:
-            parts.append(" // ".join(data_ksiegowania))
-        if extra_date:
-            parts.append(" // ".join(extra_date))
+        if data_lines:
+            parts.append("Data księgowania " + " // ".join(data_lines))
         if zrach_lines:
             parts.append(" // ".join(zrach_lines))
         if narach_lines:
             parts.append(" // ".join(narach_lines))
-        if kontrahent_lines:
-            kontrahent = normalize_contrahent(kontrahent_lines[0])
+        if kontrahent:
             parts.append(kontrahent)
         if tytul_text:
             parts.append(tytul_text)
 
         desc = _strip_spaces(" // ".join(parts))
         return desc if desc else "Operacja bankowa"
+
 
     for line in lines:
         if any(x in line.upper() for x in ["DATA WYDRUKU", "WPLYWY LICZBA OPERACJI", "SUMA WPLYWOW", "PODSUMOWANIE"]):
