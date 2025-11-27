@@ -304,23 +304,37 @@ def santander_parser(text: str):
     ]
 
     def build_desc(desc_lines):
-        data_operacji = [l for l in desc_lines if l.upper().startswith("DATA OPERACJI")]
+        # rozpoznaj bloki
         data_lines = [l for l in desc_lines if re.match(r"\d{4}-\d{2}-\d{2}", l)]
         zrach_lines = [l for l in desc_lines if l.upper().startswith("Z RACHUNEK")]
         narach_lines = [l for l in desc_lines if l.upper().startswith("NA RACHUNEK")]
-        # kontrahent = linie zawierające "ANALYTICS" albo inne nazwy firm, ale NIE "DATA KSIĘGOWANIA"
-        kontrahent_lines = [l for l in desc_lines if "ANALYTICS" in l.upper() and "DATA KSIĘGOWANIA" not in l.upper()]
+        kontrahent_lines = [l for l in desc_lines if "ANALYTICS" in l.upper()]
         tytul_lines = [l for l in desc_lines if l.upper().startswith("TYTUŁ")]
 
-        tytul_text = " ".join(tytul_lines).replace("Tytuł:", "Tytuł:").strip()
+        # scalanie tytułu z kolejnymi liniami (kontynuacja)
+        full_tytul = ""
+        if tytul_lines:
+            idx = desc_lines.index(tytul_lines[0])
+            full_tytul = desc_lines[idx]
+            # doklej kolejne linie, dopóki nie trafisz na nagłówek
+            j = idx + 1
+            while j < len(desc_lines) and not any(desc_lines[j].upper().startswith(x) for x in ["Z RACHUNEK", "NA RACHUNEK", "DATA KSIĘGOWANIA"]):
+                full_tytul += " " + desc_lines[j]
+                j += 1
+            full_tytul = full_tytul.replace("Tytuł:", "Tytuł:").strip()
+
+        # jeśli tytuł to "Umowa" i obok jest imię/nazwisko → doklej
+        if full_tytul.upper().startswith("TYTUŁ: UMOWA"):
+            for l in desc_lines:
+                if re.match(r"^[A-ZŻŹĆŁŚÓ][a-zżźćńłśó]+ [A-ZŻŹĆŁŚÓ][a-zżźćńłśó]+", l):
+                    full_tytul += " " + l.strip()
+                    break
 
         kontrahent = ""
         if kontrahent_lines:
             kontrahent = normalize_contrahent(kontrahent_lines[0])
 
         parts = []
-        if data_operacji:
-            parts.append(" // ".join(data_operacji))
         if data_lines:
             parts.append("Data księgowania " + " // ".join(data_lines))
         if zrach_lines:
@@ -329,11 +343,12 @@ def santander_parser(text: str):
             parts.append(" // ".join(narach_lines))
         if kontrahent:
             parts.append(kontrahent)
-        if tytul_text:
-            parts.append(tytul_text)
+        if full_tytul:
+            parts.append(full_tytul)
 
         desc = _strip_spaces(" // ".join(parts))
         return desc if desc else "Operacja bankowa"
+
 
 
 
