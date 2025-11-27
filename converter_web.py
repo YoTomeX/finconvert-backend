@@ -296,18 +296,24 @@ def santander_parser(text: str):
     def build_desc(desc_lines):
         # rozdziel linie na kategorie
         tytul_lines = [l for l in desc_lines if l.upper().startswith("TYTUŁ")]
-        rachunek_lines = [l for l in desc_lines if l.upper().startswith(("Z RACHUNEK", "NA RACHUNEK"))]
-        meta_lines = [l for l in desc_lines if l not in tytul_lines and l not in rachunek_lines]
+        zrach_lines = [l for l in desc_lines if l.upper().startswith("Z RACHUNEK")]
+        narach_lines = [l for l in desc_lines if l.upper().startswith("NA RACHUNEK")]
+        data_lines = [l for l in desc_lines if "DATA KSIĘGOWANIA" in l.upper()]
+        meta_lines = [l for l in desc_lines if l not in tytul_lines + zrach_lines + narach_lines + data_lines]
 
         # scal tytuł w jedną linię
         tytul_text = " ".join(tytul_lines).replace("Tytuł:", "Tytuł:").strip()
 
-        # buduj opis w kolejności: tytuł → rachunki → meta
+        # buduj opis w kolejności: tytuł → Z rachunku → Na rachunek → Data księgowania → meta
         parts = []
         if tytul_text:
             parts.append(tytul_text)
-        if rachunek_lines:
-            parts.append(" // ".join(rachunek_lines))
+        if zrach_lines:
+            parts.append(" // ".join(zrach_lines))
+        if narach_lines:
+            parts.append(" // ".join(narach_lines))
+        if data_lines:
+            parts.append(" // ".join(data_lines))
         if meta_lines:
             parts.append(" // ".join(meta_lines))
 
