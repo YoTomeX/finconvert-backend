@@ -293,6 +293,27 @@ def santander_parser(text: str):
         "DOKUMENT JEST WYDRUKIEM", "SANTANDER BANK POLSKA", "STRONA", "KRS", "NIP", "REGON"
     ]
 
+    def build_desc(desc_lines):
+        # rozdziel linie na kategorie
+        tytul_lines = [l for l in desc_lines if l.upper().startswith("TYTUŁ")]
+        rachunek_lines = [l for l in desc_lines if l.upper().startswith(("Z RACHUNEK", "NA RACHUNEK"))]
+        meta_lines = [l for l in desc_lines if l not in tytul_lines and l not in rachunek_lines]
+
+        # scal tytuł w jedną linię
+        tytul_text = " ".join(tytul_lines).replace("Tytuł:", "Tytuł:").strip()
+
+        # buduj opis w kolejności: tytuł → rachunki → meta
+        parts = []
+        if tytul_text:
+            parts.append(tytul_text)
+        if rachunek_lines:
+            parts.append(" // ".join(rachunek_lines))
+        if meta_lines:
+            parts.append(" // ".join(meta_lines))
+
+        desc = _strip_spaces(" // ".join(parts))
+        return desc if desc else "Operacja bankowa"
+
     for line in lines:
         if any(x in line.upper() for x in ["DATA WYDRUKU", "WPLYWY LICZBA OPERACJI", "SUMA WPLYWOW", "PODSUMOWANIE"]):
             continue
@@ -300,27 +321,7 @@ def santander_parser(text: str):
         if line.upper().startswith("DATA OPERACJI"):
             # jeśli mamy otwartą transakcję – zamknij ją
             if pending_op and current_date:
-                # rozdziel linie na kategorie
-                tytul_lines = [l for l in desc_lines if l.upper().startswith("TYTUŁ")]
-                rachunek_lines = [l for l in desc_lines if l.upper().startswith(("Z RACHUNEK", "NA RACHUNEK"))]
-                meta_lines = [l for l in desc_lines if l not in tytul_lines and l not in rachunek_lines]
-
-                # scal tytuł w jedną linię
-                tytul_text = " ".join(tytul_lines).replace("Tytuł:", "Tytuł:").strip()
-
-                # buduj opis w kolejności: tytuł → rachunki → meta
-                parts = []
-                if tytul_text:
-                    parts.append(tytul_text)
-                if rachunek_lines:
-                    parts.append(" // ".join(rachunek_lines))
-                if meta_lines:
-                    parts.append(" // ".join(meta_lines))
-
-                desc = _strip_spaces(" // ".join(parts))
-                if not desc:
-                    desc = "Operacja bankowa"
-
+                desc = build_desc(desc_lines)
                 gvc = map_transaction_code(desc)
                 transactions.append((current_date, amt, desc, current_date[2:6], gvc))
 
@@ -347,24 +348,7 @@ def santander_parser(text: str):
 
     # zamknij ostatnią transakcję
     if pending_op and current_date:
-        tytul_lines = [l for l in desc_lines if l.upper().startswith("TYTUŁ")]
-        rachunek_lines = [l for l in desc_lines if l.upper().startswith(("Z RACHUNEK", "NA RACHUNEK"))]
-        meta_lines = [l for l in desc_lines if l not in tytul_lines and l not in rachunek_lines]
-
-        tytul_text = " ".join(tytul_lines).replace("Tytuł:", "Tytuł:").strip()
-
-        parts = []
-        if tytul_text:
-            parts.append(tytul_text)
-        if rachunek_lines:
-            parts.append(" // ".join(rachunek_lines))
-        if meta_lines:
-            parts.append(" // ".join(meta_lines))
-
-        desc = _strip_spaces(" // ".join(parts))
-        if not desc:
-            desc = "Operacja bankowa"
-
+        desc = build_desc(desc_lines)
         gvc = map_transaction_code(desc)
         transactions.append((current_date, amt, desc, current_date[2:6], gvc))
 
