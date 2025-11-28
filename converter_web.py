@@ -273,16 +273,21 @@ def normalize_contrahent(line: str) -> str:
             return line[:idx].strip()
     return line
 
+
 def santander_parser(text: str):
     account = ""
     saldo_pocz = "0,00"
     saldo_konc = "0,00"
     transactions = []
 
-    # Numer konta – wyciągnij sam IBAN (bez spacji)
-    prod_match = re.search(r'(PL\d{26})', text.replace(" ", ""))
+    # Numer konta – priorytetowo z sekcji "Produkty"
+    prod_match = re.search(r'Produkty:\s*(\d{2}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4})', text)
     if prod_match:
-        account = prod_match.group(1)
+        account = re.sub(r'\s+', '', prod_match.group(1))
+    else:
+        iban_match = re.search(r'(PL\d{26})', text.replace(" ", ""))
+        if iban_match:
+            account = iban_match.group(1)
 
     # Salda z PDF
     sp_match = re.search(r'Saldo początkowe.*?([\-]?\d[\d\s,\.]+\d{2})\s*PLN', text, re.I)
@@ -292,7 +297,6 @@ def santander_parser(text: str):
     if sk_match:
         saldo_konc = clean_amount(sk_match.group(1))
 
-    # Parsowanie transakcji
     lines = [l.strip() for l in text.splitlines()]
     pending_op = False
     desc_lines = []
@@ -303,54 +307,33 @@ def santander_parser(text: str):
         "DOKUMENT JEST WYDRUKIEM", "SANTANDER BANK POLSKA", "STRONA", "KRS", "NIP", "REGON"
     ]
 
-    def build_desc(desc_lines):
-        # rozpoznaj bloki
-        data_lines = [l for l in desc_lines if re.match(r"\d{4}-\d{2}-\d{2}", l)]
+    def build_desc(desc_lines, op_date):
         zrach_lines = [l for l in desc_lines if l.upper().startswith("Z RACHUNEK")]
         narach_lines = [l for l in desc_lines if l.upper().startswith("NA RACHUNEK")]
-        kontrahent_lines = [l for l in desc_lines if "ANALYTICS" in l.upper()]
         tytul_lines = [l for l in desc_lines if l.upper().startswith("TYTUŁ")]
 
-        # scalanie tytułu z kolejnymi liniami (kontynuacja)
         full_tytul = ""
         if tytul_lines:
             idx = desc_lines.index(tytul_lines[0])
             full_tytul = desc_lines[idx]
-            # doklej kolejne linie, dopóki nie trafisz na nagłówek
             j = idx + 1
             while j < len(desc_lines) and not any(desc_lines[j].upper().startswith(x) for x in ["Z RACHUNEK", "NA RACHUNEK", "DATA KSIĘGOWANIA"]):
                 full_tytul += " " + desc_lines[j]
                 j += 1
-            full_tytul = full_tytul.replace("Tytuł:", "Tytuł:").strip()
-
-        # jeśli tytuł to "Umowa" i obok jest imię/nazwisko → doklej
-        if full_tytul.upper().startswith("TYTUŁ: UMOWA"):
-            for l in desc_lines:
-                if re.match(r"^[A-ZŻŹĆŁŚÓ][a-zżźćńłśó]+ [A-ZŻŹĆŁŚÓ][a-zżźćńłśó]+", l):
-                    full_tytul += " " + l.strip()
-                    break
-
-        kontrahent = ""
-        if kontrahent_lines:
-            kontrahent = normalize_contrahent(kontrahent_lines[0])
+            full_tytul = full_tytul.strip()
 
         parts = []
-        if data_lines:
-            parts.append("Data księgowania " + " // ".join(data_lines))
+        if op_date:
+            parts.append(f"Data operacji {op_date}")
+        if full_tytul:
+            parts.append(full_tytul)
         if zrach_lines:
             parts.append(" // ".join(zrach_lines))
         if narach_lines:
             parts.append(" // ".join(narach_lines))
-        if kontrahent:
-            parts.append(kontrahent)
-        if full_tytul:
-            parts.append(full_tytul)
 
         desc = _strip_spaces(" // ".join(parts))
         return desc if desc else "Operacja bankowa"
-
-
-
 
     for line in lines:
         if any(x in line.upper() for x in ["DATA WYDRUKU", "WPLYWY LICZBA OPERACJI", "SUMA WPLYWOW", "PODSUMOWANIE"]):
@@ -358,7 +341,7 @@ def santander_parser(text: str):
 
         if line.upper().startswith("DATA OPERACJI"):
             if pending_op and current_date:
-                desc = build_desc(desc_lines)
+                desc = build_desc(desc_lines, current_date)
                 gvc = map_transaction_code(desc)
                 transactions.append((current_date, amt, desc, current_date[2:6], gvc))
 
@@ -366,21 +349,18 @@ def santander_parser(text: str):
             desc_lines = []
             m_amt = re.search(r'([-]?\d[\d\s,\.]+\d{2})\s*PLN', line)
             amt = clean_amount(m_amt.group(1)) if m_amt else "0,00"
-            current_date = None
+            m_date = re.search(r'(\d{4}-\d{2}-\d{2})', line)
+            current_date = _parse_date_text_to_yymmdd(m_date.group(1)) if m_date else None
             continue
 
         if pending_op:
-            m_date = re.match(r'(\d{4}-\d{2}-\d{2})', line)
-            if m_date and not current_date:
-                current_date = _parse_date_text_to_yymmdd(m_date.group(1))
-            else:
-                if any(marker in line.upper() for marker in STOPKA_MARKERS):
-                    continue
-                if line:
-                    desc_lines.append(line)
+            if any(marker in line.upper() for marker in STOPKA_MARKERS):
+                continue
+            if line:
+                desc_lines.append(line)
 
     if pending_op and current_date:
-        desc = build_desc(desc_lines)
+        desc = build_desc(desc_lines, current_date)
         gvc = map_transaction_code(desc)
         transactions.append((current_date, amt, desc, current_date[2:6], gvc))
 
@@ -442,6 +422,7 @@ def _amount_sign_and_value(amount_str: str):
     sign = "D" if is_negative else "C"
     return sign, value
 
+
 def build_mt940(account, saldo_pocz, saldo_konc, transactions, num_20, num_28C, open_d, close_d):
     """
     Buduje plik MT940 na podstawie sparsowanych danych.
@@ -454,22 +435,20 @@ def build_mt940(account, saldo_pocz, saldo_konc, transactions, num_20, num_28C, 
     lines.append(f":25:/{account}")
     lines.append(f":28C:{num_28C}")
 
-    # Saldo początkowe – znak z wartości
+    # Saldo początkowe
     sp_sign, sp_value = _amount_sign_and_value(saldo_pocz)
     lines.append(f":60F:{sp_sign}{open_d}PLN{sp_value}")
 
     # Transakcje
     for d, a, desc, mmdd, gvc in transactions:
         t_sign, t_value = _amount_sign_and_value(a)
-        # :61: – data, znak, kwota, kod transakcji
         lines.append(f":61:{d}{t_sign}{t_value}{gvc}//NONREF")
-        # :86: – opis
         if desc.strip():
-            lines.append(f":86:/00{desc}")
+            lines.append(f":86:{desc}")
         else:
-            lines.append(":86:/00")
+            lines.append(":86:")
 
-    # Saldo końcowe – znak z wartości
+    # Saldo końcowe
     sk_sign, sk_value = _amount_sign_and_value(saldo_konc)
     lines.append(f":62F:{sk_sign}{close_d}PLN{sk_value}")
     lines.append(f":64:{sk_sign}{close_d}PLN{sk_value}")
