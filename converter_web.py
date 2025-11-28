@@ -317,17 +317,42 @@ def santander_parser(text: str):
     ]
 
     def build_desc(desc_lines, op_date_iso):
-        zrach_lines = [l for l in desc_lines if l.upper().startswith("Z RACHUNEK")]
-        narach_lines = [l for l in desc_lines if l.upper().startswith("NA RACHUNEK")]
-        tytul_lines = [l for l in desc_lines if l.upper().startswith("TYTUŁ")]
+        def collect_block(start_line, keyword):
+            """Zbiera linię zaczynającą się od keyword + kolejne linie z nazwą kontrahenta."""
+            result = []
+            for idx, l in enumerate(desc_lines):
+                if l.upper().startswith(keyword):
+                    block = l
+                    j = idx + 1
+                    while j < len(desc_lines) and not any(desc_lines[j].upper().startswith(x) for x in [
+                        "DATA KSIĘGOWANIA", "DATA OPERACJI", "TYTUŁ", "Z RACHUNEK", "NA RACHUNEK"
+                    ]):
+                        block += " " + desc_lines[j]
+                        j += 1
+                    result.append(block.strip())
+            return result
 
+        # zbierz pełne bloki
+        zrach_lines = collect_block(desc_lines, "Z RACHUNEK")
+        narach_lines = collect_block(desc_lines, "NA RACHUNEK")
+
+        # tytuł może być wieloliniowy
         full_tytul = ""
-        if tytul_lines:
-            full_tytul = " ".join(tytul_lines).strip()
+        for idx, l in enumerate(desc_lines):
+            if l.upper().startswith("TYTUŁ"):
+                full_tytul = l
+                j = idx + 1
+                while j < len(desc_lines) and not any(desc_lines[j].upper().startswith(x) for x in [
+                    "Z RACHUNEK", "NA RACHUNEK", "DATA KSIĘGOWANIA", "DATA OPERACJI"
+                ]):
+                    full_tytul += " " + desc_lines[j]
+                    j += 1
+                full_tytul = full_tytul.strip()
+                break
 
         # jeśli tytuł to tylko "Umowa", dopisz kontrahenta z linii "Na rachunek"
         if full_tytul.upper().startswith("TYTUŁ: UMOWA") and narach_lines:
-            full_tytul += " " + " ".join(narach_lines)
+            full_tytul += " " + narach_lines[0]
 
         parts = []
         if op_date_iso:
