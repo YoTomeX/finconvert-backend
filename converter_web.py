@@ -336,10 +336,13 @@ def santander_parser(text: str):
         return desc if desc else "Operacja bankowa"
 
     for line in lines:
+        # pomijamy stopki i podsumowania
         if any(x in line.upper() for x in ["DATA WYDRUKU", "WPLYWY LICZBA OPERACJI", "SUMA WPLYWOW", "PODSUMOWANIE"]):
             continue
 
-        if line.upper().startswith("DATA OPERACJI"):
+        # początek nowej transakcji
+        m_op = re.match(r'Data operacji\s+(\d{4}-\d{2}-\d{2})', line, re.I)
+        if m_op:
             if pending_op and current_date:
                 desc = build_desc(desc_lines, current_date)
                 gvc = map_transaction_code(desc)
@@ -347,24 +350,21 @@ def santander_parser(text: str):
 
             pending_op = True
             desc_lines = []
-            # wyciągnij datę operacji
-            m_date = re.search(r'(\d{4}-\d{2}-\d{2})', line)
-            current_date = _parse_date_text_to_yymmdd(m_date.group(1)) if m_date else None
+            current_date = _parse_date_text_to_yymmdd(m_op.group(1))
             amt = "0,00"
             continue
 
         if pending_op:
             if any(marker in line.upper() for marker in STOPKA_MARKERS):
                 continue
-            if "PLN" in line.upper():
+            if "PLN" in line.upper() and amt == "0,00":
                 m_amt = re.search(r'([-]?\d[\d\s,\.]+\d{2})\s*PLN', line)
                 if m_amt:
                     amt = clean_amount(m_amt.group(1))
-                else:
-                    desc_lines.append(line)
             elif line:
                 desc_lines.append(line)
 
+    # zamknięcie ostatniego bloku
     if pending_op and current_date:
         desc = build_desc(desc_lines, current_date)
         gvc = map_transaction_code(desc)
