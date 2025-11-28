@@ -257,6 +257,14 @@ def _parse_date_text_to_yymmdd(s: str) -> str:
     return datetime.now().strftime("%y%m%d")
 
 
+def _parse_date_text_to_iso(s: str) -> str:
+    """Zwraca datę w formacie YYYY-MM-DD (ISO)."""
+    try:
+        return datetime.strptime(s.strip(), "%Y-%m-%d").strftime("%Y-%m-%d")
+    except Exception:
+        return datetime.now().strftime("%Y-%m-%d")
+
+
 def _parse_amount_pln_from_line(s: str) -> str:
     m = re.search(r'([\-]?\d[\d\s.,]*\d{2})\s*PLN', s)
     return clean_amount(m.group(1)) if m else "0,00"
@@ -308,24 +316,22 @@ def santander_parser(text: str):
         "DOKUMENT JEST WYDRUKIEM", "SANTANDER BANK POLSKA", "STRONA", "KRS", "NIP", "REGON"
     ]
 
-    def build_desc(desc_lines, op_date):
+    def build_desc(desc_lines, op_date_iso):
         zrach_lines = [l for l in desc_lines if l.upper().startswith("Z RACHUNEK")]
         narach_lines = [l for l in desc_lines if l.upper().startswith("NA RACHUNEK")]
         tytul_lines = [l for l in desc_lines if l.upper().startswith("TYTUŁ")]
 
         full_tytul = ""
         if tytul_lines:
-            idx = desc_lines.index(tytul_lines[0])
-            full_tytul = desc_lines[idx]
-            j = idx + 1
-            while j < len(desc_lines) and not any(desc_lines[j].upper().startswith(x) for x in ["Z RACHUNEK", "NA RACHUNEK", "DATA KSIĘGOWANIA"]):
-                full_tytul += " " + desc_lines[j]
-                j += 1
-            full_tytul = full_tytul.strip()
+            full_tytul = " ".join(tytul_lines).strip()
+
+        # jeśli tytuł to tylko "Umowa", dopisz kontrahenta z linii "Na rachunek"
+        if full_tytul.upper().startswith("TYTUŁ: UMOWA") and narach_lines:
+            full_tytul += " " + " ".join(narach_lines)
 
         parts = []
-        if op_date:
-            parts.append(f"Data operacji {op_date}")
+        if op_date_iso:
+            parts.append(f"Data operacji {op_date_iso}")
         if full_tytul:
             parts.append(full_tytul)
         if zrach_lines:
@@ -335,6 +341,7 @@ def santander_parser(text: str):
 
         desc = _strip_spaces(" // ".join(parts))
         return desc if desc else "Operacja bankowa"
+
 
     i = 0
     while i < len(lines):
@@ -361,7 +368,8 @@ def santander_parser(text: str):
             if i + 1 < len(lines):
                 m_date = re.search(r'(\d{4}-\d{2}-\d{2})', lines[i+1])
                 if m_date:
-                    current_date = _parse_date_text_to_yymmdd(m_date.group(1))
+                    current_date = _parse_date_text_to_yymmdd(m_date.group(1))   # do :61:
+                    current_date_iso = _parse_date_text_to_iso(m_date.group(1))  # do :86:
                     i += 1  # przeskocz linię z datą
 
             i += 1
