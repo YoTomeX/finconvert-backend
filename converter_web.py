@@ -347,16 +347,22 @@ def santander_parser(text: str):
 
             pending_op = True
             desc_lines = []
-            m_amt = re.search(r'([-]?\d[\d\s,\.]+\d{2})\s*PLN', line)
-            amt = clean_amount(m_amt.group(1)) if m_amt else "0,00"
+            # wyciągnij datę operacji
             m_date = re.search(r'(\d{4}-\d{2}-\d{2})', line)
             current_date = _parse_date_text_to_yymmdd(m_date.group(1)) if m_date else None
+            amt = "0,00"
             continue
 
         if pending_op:
             if any(marker in line.upper() for marker in STOPKA_MARKERS):
                 continue
-            if line:
+            if "PLN" in line.upper():
+                m_amt = re.search(r'([-]?\d[\d\s,\.]+\d{2})\s*PLN', line)
+                if m_amt:
+                    amt = clean_amount(m_amt.group(1))
+                else:
+                    desc_lines.append(line)
+            elif line:
                 desc_lines.append(line)
 
     if pending_op and current_date:
