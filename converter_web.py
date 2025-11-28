@@ -336,7 +336,6 @@ def santander_parser(text: str):
         return desc if desc else "Operacja bankowa"
 
     for line in lines:
-        # pomijamy stopki i podsumowania
         if any(x in line.upper() for x in ["DATA WYDRUKU", "WPLYWY LICZBA OPERACJI", "SUMA WPLYWOW", "PODSUMOWANIE"]):
             continue
 
