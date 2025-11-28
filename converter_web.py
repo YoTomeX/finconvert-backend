@@ -299,12 +299,6 @@ def santander_parser(text: str):
 
     lines = [l.strip() for l in text.splitlines()]
 
-    # DEBUG: pokaż pierwsze linie PDF
-    print("\n=== DEBUG: pierwsze 80 linii PDF ===")
-    for idx, l in enumerate(lines[:80]):
-        print(f"{idx:03d}: {l}")
-    print("=== KONIEC DEBUG ===\n")
-
     pending_op = False
     desc_lines = []
     amt = "0,00"
@@ -342,13 +336,15 @@ def santander_parser(text: str):
         desc = _strip_spaces(" // ".join(parts))
         return desc if desc else "Operacja bankowa"
 
-    for line in lines:
+    i = 0
+    while i < len(lines):
+        line = lines[i]
         if any(x in line.upper() for x in ["DATA WYDRUKU", "WPLYWY LICZBA OPERACJI", "SUMA WPLYWOW", "PODSUMOWANIE"]):
+            i += 1
             continue
 
-        # początek nowej transakcji
-        m_op = re.match(r'Data operacji\s+(\d{4}-\d{2}-\d{2})', line, re.I)
-        if m_op:
+        if line.startswith("Data operacji"):
+            # zamknij poprzedni blok
             if pending_op and current_date:
                 desc = build_desc(desc_lines, current_date)
                 gvc = map_transaction_code(desc)
@@ -356,19 +352,29 @@ def santander_parser(text: str):
 
             pending_op = True
             desc_lines = []
-            current_date = _parse_date_text_to_yymmdd(m_op.group(1))
-            amt = "0,00"
+
+            # kwota z tej samej linii
+            m_amt = re.search(r'([-]?\d[\d\s,\.]+\d{2})\s*PLN', line)
+            amt = clean_amount(m_amt.group(1)) if m_amt else "0,00"
+
+            # data operacji w następnej linii
+            if i + 1 < len(lines):
+                m_date = re.search(r'(\d{4}-\d{2}-\d{2})', lines[i+1])
+                if m_date:
+                    current_date = _parse_date_text_to_yymmdd(m_date.group(1))
+                    i += 1  # przeskocz linię z datą
+
+            i += 1
             continue
 
         if pending_op:
             if any(marker in line.upper() for marker in STOPKA_MARKERS):
+                i += 1
                 continue
-            if "PLN" in line.upper() and amt == "0,00":
-                m_amt = re.search(r'([-]?\d[\d\s,\.]+\d{2})\s*PLN', line)
-                if m_amt:
-                    amt = clean_amount(m_amt.group(1))
-            elif line:
+            if line:
                 desc_lines.append(line)
+
+        i += 1
 
     # zamknięcie ostatniego bloku
     if pending_op and current_date:
