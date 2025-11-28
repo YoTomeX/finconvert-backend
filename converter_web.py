@@ -298,6 +298,13 @@ def santander_parser(text: str):
         saldo_konc = clean_amount(sk_match.group(1))
 
     lines = [l.strip() for l in text.splitlines()]
+
+    # DEBUG: pokaż pierwsze linie PDF
+    print("\n=== DEBUG: pierwsze 80 linii PDF ===")
+    for idx, l in enumerate(lines[:80]):
+        print(f"{idx:03d}: {l}")
+    print("=== KONIEC DEBUG ===\n")
+
     pending_op = False
     desc_lines = []
     amt = "0,00"
