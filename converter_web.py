@@ -306,11 +306,11 @@ def santander_parser(text: str):
         saldo_konc = clean_amount(sk_match.group(1))
 
     lines = [l.strip() for l in text.splitlines()]
-
     pending_op = False
     desc_lines = []
     amt = "0,00"
     current_date = None
+    current_date_iso = None
 
     STOPKA_MARKERS = [
         "DOKUMENT JEST WYDRUKIEM", "SANTANDER BANK POLSKA", "STRONA", "KRS", "NIP", "REGON"
@@ -342,7 +342,6 @@ def santander_parser(text: str):
         desc = _strip_spaces(" // ".join(parts))
         return desc if desc else "Operacja bankowa"
 
-
     i = 0
     while i < len(lines):
         line = lines[i]
@@ -353,7 +352,7 @@ def santander_parser(text: str):
         if line.startswith("Data operacji"):
             # zamknij poprzedni blok
             if pending_op and current_date:
-                desc = build_desc(desc_lines, current_date)
+                desc = build_desc(desc_lines, current_date_iso)
                 gvc = map_transaction_code(desc)
                 transactions.append((current_date, amt, desc, current_date[2:6], gvc))
 
@@ -386,7 +385,7 @@ def santander_parser(text: str):
 
     # zamknięcie ostatniego bloku
     if pending_op and current_date:
-        desc = build_desc(desc_lines, current_date)
+        desc = build_desc(desc_lines, current_date_iso)
         gvc = map_transaction_code(desc)
         transactions.append((current_date, amt, desc, current_date[2:6], gvc))
 
