@@ -309,8 +309,9 @@ def santander_parser(text: str):
     pending_op = False
     desc_lines = []
     amt = "0,00"
-    current_date = None
-    current_date_iso = None
+    current_oper_date = None
+    current_oper_date_iso = None
+    current_book_date = None
 
     STOPKA_MARKERS = [
         "DOKUMENT JEST WYDRUKIEM", "SANTANDER BANK POLSKA", "STRONA", "KRS", "NIP", "REGON"
@@ -376,10 +377,11 @@ def santander_parser(text: str):
 
         if line.startswith("Data operacji"):
             # zamknij poprzedni blok
-            if pending_op and current_date:
-                desc = build_desc(desc_lines, current_date_iso)
+            if pending_op and current_oper_date:
+                desc = build_desc(desc_lines, current_oper_date_iso)
                 gvc = map_transaction_code(desc)
-                transactions.append((current_date, amt, desc, current_date[2:6], gvc))
+                entry_mmdd = current_book_date[2:6] if current_book_date else current_oper_date[2:6]
+                transactions.append((current_oper_date, amt, desc, entry_mmdd, gvc))
 
             pending_op = True
             desc_lines = []
@@ -388,13 +390,22 @@ def santander_parser(text: str):
             m_amt = re.search(r'([-]?\d[\d\s,\.]+\d{2})\s*PLN', line)
             amt = clean_amount(m_amt.group(1)) if m_amt else "0,00"
 
-            # data operacji w następnej linii
+            current_oper_date = None
+            current_oper_date_iso = None
+            current_book_date = None
+
+            # Data operacji ma iść do :61:, a data księgowania do entry date (MMDD), jeśli dostępna.
             if i + 1 < len(lines):
-                m_date = re.search(r'(\d{4}-\d{2}-\d{2})', lines[i+1])
-                if m_date:
-                    current_date = _parse_date_text_to_yymmdd(m_date.group(1))   # do :61:
-                    current_date_iso = _parse_date_text_to_iso(m_date.group(1))  # do :86:
-                    i += 1  # przeskocz linię z datą
+                op_match = re.search(r'(\d{4}-\d{2}-\d{2})', lines[i+1])
+                if op_match:
+                    current_oper_date = _parse_date_text_to_yymmdd(op_match.group(1))
+                    current_oper_date_iso = _parse_date_text_to_iso(op_match.group(1))
+                    i += 1  # przeskocz linię z datą operacji
+            if i + 1 < len(lines):
+                book_match = re.search(r'(\d{4}-\d{2}-\d{2})', lines[i+1])
+                if book_match:
+                    current_book_date = _parse_date_text_to_yymmdd(book_match.group(1))
+                    i += 1  # przeskocz linię z datą księgowania
 
             i += 1
             continue
@@ -409,10 +420,11 @@ def santander_parser(text: str):
         i += 1
 
     # zamknięcie ostatniego bloku
-    if pending_op and current_date:
-        desc = build_desc(desc_lines, current_date_iso)
+    if pending_op and current_oper_date:
+        desc = build_desc(desc_lines, current_oper_date_iso)
         gvc = map_transaction_code(desc)
-        transactions.append((current_date, amt, desc, current_date[2:6], gvc))
+        entry_mmdd = current_book_date[2:6] if current_book_date else current_oper_date[2:6]
+        transactions.append((current_oper_date, amt, desc, entry_mmdd, gvc))
 
     transactions = deduplicate_transactions(transactions)
 
@@ -482,7 +494,7 @@ def build_mt940(account, saldo_pocz, saldo_konc, transactions, num_20, num_28C, 
     lines = []
     # Nagłówki
     lines.append(f":20:{num_20}")
-    lines.append(f":25:/{account}")
+    lines.append(f":25:{format_account_for_25(account)}")
     lines.append(f":28C:{num_28C}")
 
     # Saldo początkowe
@@ -494,7 +506,7 @@ def build_mt940(account, saldo_pocz, saldo_konc, transactions, num_20, num_28C, 
         t_sign, t_value = _amount_sign_and_value(a)
         lines.append(f":61:{d}{t_sign}{t_value}{gvc}//NONREF")
         if desc.strip():
-            lines.append(f":86:{desc}")
+            lines.append(build_86_segments(desc))
         else:
             lines.append(":86:")
 
