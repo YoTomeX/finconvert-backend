@@ -8,6 +8,10 @@ const cors       = require('cors');
 
 const app  = express();
 const port = parseInt(process.env.PORT || "3000", 10);
+const pythonBin = process.env.PYTHON_BIN || 'python3';
+const maxUploadMb = parseInt(process.env.MAX_UPLOAD_MB || "15", 10);
+const outputBaseUrl = process.env.OUTPUT_BASE_URL || 'https://finconvert-backend-1.onrender.com';
+const retentionHours = parseInt(process.env.FILE_RETENTION_HOURS || "72", 10);
 
 // Konfiguracja CORS - tylko jedna, solidna linia middleware!
 app.use(cors({
@@ -47,6 +51,7 @@ const storage = multer.diskStorage({
 });
 const upload = multer({
   storage,
+  limits: { fileSize: maxUploadMb * 1024 * 1024 },
   fileFilter: (req,file,cb) => {
     if (file.mimetype !== 'application/pdf') {
       return cb(new Error('Tylko pliki PDF są obsługiwane.'));
@@ -55,17 +60,55 @@ const upload = multer({
   }
 });
 
+function isPdfMagic(filePath) {
+  try {
+    const fd = fs.openSync(filePath, 'r');
+    const buf = Buffer.alloc(5);
+    fs.readSync(fd, buf, 0, 5, 0);
+    fs.closeSync(fd);
+    return buf.toString('utf8') === '%PDF-';
+  } catch (_) {
+    return false;
+  }
+}
+
+function cleanupOldFiles(dirPath, maxAgeMs) {
+  if (!fs.existsSync(dirPath)) return;
+  const now = Date.now();
+  for (const name of fs.readdirSync(dirPath)) {
+    const full = path.join(dirPath, name);
+    try {
+      const st = fs.statSync(full);
+      if (!st.isFile()) continue;
+      if (now - st.mtimeMs > maxAgeMs) fs.unlinkSync(full);
+    } catch (e) {
+      console.warn(`⚠️ Nie mogę usunąć ${full}:`, e.message);
+    }
+  }
+}
+
 app.post('/convert', upload.single('file'), (req, res) => {
   if (!req.file) {
     return res.status(400).json({ success:false, message:'Nie przesłano pliku PDF.' });
   }
+  cleanupOldFiles(uploadFolder, retentionHours * 3600 * 1000);
+  cleanupOldFiles(outputFolder, retentionHours * 3600 * 1000);
 
   const scriptPath     = path.join(__dirname, 'converter_web.py');
   const pdfPath        = path.join(uploadFolder, req.file.filename);
   const outputFilename = formatOutputFilename(req.file.filename);
   const outputPath     = path.join(outputFolder, outputFilename);
 
-  const python = spawn('python', [ scriptPath, pdfPath, outputPath ]);
+  if (!isPdfMagic(pdfPath)) {
+    try { fs.unlinkSync(pdfPath); } catch (_) {}
+    return res.status(400).json({
+      success: false,
+      code: 'INVALID_PDF_SIGNATURE',
+      message: 'Plik nie jest poprawnym PDF (brak sygnatury %PDF-).'
+    });
+  }
+
+  const python = spawn(pythonBin, [ scriptPath, pdfPath, outputPath ]);
   let stdoutData = '';
   let stderrData = '';
 
@@ -151,7 +194,7 @@ app.post('/convert', upload.single('file'), (req, res) => {
       success:       true,
       message:       'Konwersja zakończona sukcesem.',
       output:        stdoutData,
-      downloadUrl:   `https://finconvert-backend-1.onrender.com/outputs/${outputFilename}`,
+      downloadUrl:   `${outputBaseUrl}/outputs/${outputFilename}`,
       statementMonth,
       statementBank,
       numberOfTransactions
@@ -162,16 +205,25 @@ app.post('/convert', upload.single('file'), (req, res) => {
         success:       true,
         message:       'Konwersja zakończona sukcesem.',
         output:        stdoutData,
-        downloadUrl:   `https://finconvert-backend-1.onrender.com/outputs/${outputFilename}`,
+        downloadUrl:   `${outputBaseUrl}/outputs/${outputFilename}`,
         statementMonth,
         statementBank,
         numberOfTransactions
       });
     } else {
+      if (code === 3) {
+        return res.status(422).json({
+          success: false,
+          code: 'UNSUPPORTED_BANK_PARSER',
+          message: 'Wykryto bank, dla którego parser nie jest jeszcze obsługiwany.',
+          error: stderrData
+        });
+      }
       return res.status(500).json({
         success: false,
+        code: 'CONVERSION_ERROR',
         message: 'Błąd konwersji.',
-        error:   stderrData
+        error: stderrData
       });
     }
   });
@@ -181,6 +233,29 @@ app.use(express.static(path.join(__dirname, 'public')));
 app.use((req, res, next) => {
   console.log(`${req.method} ${req.url}`);
   next();
+});
+
+app.use((err, req, res, next) => {
+  if (!err) return next();
+  if (err.code === 'LIMIT_FILE_SIZE') {
+    return res.status(413).json({
+      success: false,
+      code: 'FILE_TOO_LARGE',
+      message: `Plik jest zbyt duży. Maksymalny rozmiar to ${maxUploadMb} MB.`
+    });
+  }
+  if (err.message === 'Tylko pliki PDF są obsługiwane.') {
+    return res.status(400).json({
+      success: false,
+      code: 'INVALID_FILE_TYPE',
+      message: err.message
+    });
+  }
+  return res.status(500).json({
+    success: false,
+    code: 'SERVER_ERROR',
+    message: 'Nieoczekiwany błąd serwera.'
+  });
 });
 
 app.use('/outputs', express.static(outputFolder));
