@@ -29,3 +29,11 @@ FinConvert is a web application that converts bank statement PDFs into MT940 for
 git clone https://github.com/YoTomeX/finconvert-backend.git
 cd finconvert-backend
 npm install
+python3 -m pip install -r requirements.txt
+node server.js
+```
+
+## ✅ Testy / Tests
+
+```bash
+python3 -m unittest discover -s tests -p "test_*.py"
